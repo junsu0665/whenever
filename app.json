@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "웨네버",
+    "slug": "wenever",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.wenever.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "학생증과 시간표 사진을 업로드하기 위해 사진 보관함 접근이 필요합니다.",
+        "NSUserNotificationsUsageDescription": "수업, 급식, 댓글 알림을 보내기 위해 알림 권한이 필요합니다."
+      }
+    },
+    "android": {
+      "package": "com.wenever.app",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "POST_NOTIFICATIONS"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-image-picker",
+      "expo-notifications",
+      "react-native-google-mobile-ads"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b125997a-10ed-4b1e-92b9-a435bd345b2b"
+      }
+    },
+    "owner": "junsu0665"
+  }
+}
