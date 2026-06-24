@@ -30,11 +30,14 @@ export function TimeField({ accessibilityLabel, onCommit, style, value }: TimeFi
     <TextInput
       accessibilityLabel={accessibilityLabel}
       keyboardType="numbers-and-punctuation"
+      maxLength={5}
       onBlur={commit}
       onChangeText={setDraft}
+      onSubmitEditing={commit}
       placeholder="08:40"
       placeholderTextColor={colors.disabled}
       returnKeyType="done"
+      selectTextOnFocus
       style={[styles.input, style]}
       value={draft}
     />

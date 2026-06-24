@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { ExternalLink, EyeOff, Flag, Gift, Megaphone, TimerReset, X } from 'lucide-react-native';
 
+import { getGoogleMobileAdsModule } from './google-mobile-ads';
 import {
   recordRemoteAdClick,
   recordRemoteAdFeedback,
@@ -23,8 +24,6 @@ import {
 import { providerConfig } from '../services/env';
 import { useAppState } from '../state/AppStateContext';
 import { colors, fonts, radii, spacing, typography } from '../theme';
-
-declare const require: (moduleName: string) => unknown;
 
 export type AdPlacement =
   | 'app_open'
@@ -50,33 +49,6 @@ type RevenueCampaign = {
   eyebrow: string;
 };
 
-type GoogleMobileAdsModule = {
-  default?: () => {
-    initialize?: () => Promise<unknown>;
-    setRequestConfiguration?: (config: Record<string, unknown>) => Promise<unknown>;
-  };
-  AdEventType?: {
-    CLOSED?: string;
-    ERROR?: string;
-    LOADED?: string;
-  };
-  AppOpenAd?: {
-    createForAdRequest: (unitId: string, options?: Record<string, unknown>) => {
-      addAdEventListener: (eventType: string, listener: (error?: unknown) => void) => () => void;
-      load: () => void;
-      show: () => void;
-    };
-  };
-  BannerAd?: React.ComponentType<Record<string, unknown>>;
-  BannerAdSize?: {
-    ANCHORED_ADAPTIVE_BANNER?: string;
-    BANNER?: string;
-  };
-  MaxAdContentRating?: {
-    PG?: string;
-  };
-};
-
 const sponsorUrl = 'https://wenever.app/sponsors/exam-season';
 const androidTestBannerUnitId = 'ca-app-pub-3940256099942544/9214589741';
 const iosTestBannerUnitId = 'ca-app-pub-3940256099942544/2435281174';
@@ -85,7 +57,6 @@ const iosTestAppOpenUnitId = 'ca-app-pub-3940256099942544/5575463023';
 const nonPersonalizedRequestOptions = {
   requestNonPersonalizedAdsOnly: true,
 };
-let googleMobileAdsModule: GoogleMobileAdsModule | null | undefined;
 let googleMobileAdsInitPromise: Promise<boolean> | null = null;
 
 const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
@@ -94,11 +65,11 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '시험기간 스폰서',
     title: '중간고사 2주 집중팩',
-    body: '오늘 학교 주변 스터디 혜택과 오답노트 템플릿을 확인해 보세요.',
+    body: '학교 주변 혜택 · 오답노트 템플릿',
     ctaLabel: '혜택 보기',
     destinationUrl: sponsorUrl,
-    accent: colors.blue,
-    background: colors.blueSoft,
+    accent: colors.primaryDark,
+    background: colors.primarySoft,
     eyebrow: '시험기간 캠페인',
   },
   home_bottom: {
@@ -106,7 +77,7 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '플래너 스폰서',
     title: '오늘 할 일, 10분 단위로 정리하기',
-    body: '학교 생활 루틴에 맞춘 플래너팩',
+    body: '학교 생활용 플래너팩',
     ctaLabel: '보기',
     destinationUrl: sponsorUrl,
     accent: colors.primary,
@@ -118,10 +89,10 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '지역 스터디 스폰서',
     title: '공강 시간에 가까운 학습 공간',
-    body: '학교 주변 시험기간 좌석 정보를 확인하세요.',
+    body: '학교 주변 좌석 정보',
     ctaLabel: '확인',
     destinationUrl: sponsorUrl,
-    accent: colors.coral,
+    accent: colors.primaryDark,
     background: colors.coralSoft,
     eyebrow: '시간표 배너',
   },
@@ -129,8 +100,8 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     id: 'direct-capture-native-2026',
     provider: 'sponsor_direct',
     advertiserName: '시간표 등록 스폰서',
-    title: '시간표 등록 중 잠깐, 시험 대비 자료 받기',
-    body: '사진 인식 화면 하단에 들어가는 네이티브 광고 슬롯입니다.',
+    title: '시험 대비 자료 모음',
+    body: '등록한 수업에 맞춰 참고할 수 있는 자료',
     ctaLabel: '자료 보기',
     destinationUrl: sponsorUrl,
     accent: colors.warning,
@@ -142,7 +113,7 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '학교생활 스폰서',
     title: '시험기간 간식·문구 쿠폰',
-    body: '게시글 흐름을 방해하지 않는 학교 단위 네이티브 광고입니다.',
+    body: '간식·문구 할인 정보',
     ctaLabel: '쿠폰 보기',
     destinationUrl: sponsorUrl,
     accent: colors.primary,
@@ -154,11 +125,11 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '게시판 스폰서',
     title: '학교별 이벤트를 한 번에',
-    body: '게시판 하단 배너 광고 슬롯',
+    body: '학교별 이벤트 안내',
     ctaLabel: '보기',
     destinationUrl: sponsorUrl,
-    accent: colors.blue,
-    background: colors.blueSoft,
+    accent: colors.primaryDark,
+    background: colors.primarySoft,
     eyebrow: '게시판 배너',
   },
   meal_bottom: {
@@ -166,10 +137,10 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '급식 화면 스폰서',
     title: '하교 후 간식 쿠폰',
-    body: '오늘 급식 확인 후 자연스럽게 노출되는 배너',
+    body: '하교 후 간식 할인 정보',
     ctaLabel: '받기',
     destinationUrl: sponsorUrl,
-    accent: colors.coral,
+    accent: colors.primaryTint,
     background: colors.coralSoft,
     eyebrow: '급식 배너',
   },
@@ -177,8 +148,8 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     id: 'direct-score-analysis-sponsor-2026',
     provider: 'sponsor_direct',
     advertiserName: '성적 확인 스폰서',
-    title: '분포 계산 중, 시험 대비 체크리스트',
-    body: '같은 시험 제보를 기준으로 위치를 계산하는 동안 노출됩니다.',
+    title: '시험 대비 체크리스트',
+    body: '제보가 모이는 동안 확인하는 준비 목록',
     ctaLabel: '체크리스트',
     destinationUrl: sponsorUrl,
     accent: colors.warning,
@@ -190,7 +161,7 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
     provider: 'sponsor_direct',
     advertiserName: '결과 화면 스폰서',
     title: '다음 시험 준비 자료',
-    body: '결과 수치 아래에만 작게 노출되는 배너',
+    body: '오답 정리와 다음 시험 계획',
     ctaLabel: '열기',
     destinationUrl: sponsorUrl,
     accent: colors.primary,
@@ -201,24 +172,6 @@ const campaignsByPlacement: Record<AdPlacement, RevenueCampaign> = {
 
 function getLocalDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function getGoogleMobileAdsModule() {
-  if (Platform.OS === 'web') {
-    return null;
-  }
-
-  if (googleMobileAdsModule !== undefined) {
-    return googleMobileAdsModule;
-  }
-
-  try {
-    googleMobileAdsModule = require('react-native-google-mobile-ads') as GoogleMobileAdsModule;
-  } catch {
-    googleMobileAdsModule = null;
-  }
-
-  return googleMobileAdsModule;
 }
 
 function getPlatformAdUnitId(kind: 'appOpen' | 'banner') {
@@ -232,10 +185,10 @@ function getPlatformAdUnitId(kind: 'appOpen' | 'banner') {
   }
 
   if (kind === 'appOpen') {
-    return isAndroid ? providerConfig.admobAndroidAppOpenUnitId || androidTestAppOpenUnitId : providerConfig.admobIosAppOpenUnitId || iosTestAppOpenUnitId;
+    return isAndroid ? providerConfig.admobAndroidAppOpenUnitId || null : providerConfig.admobIosAppOpenUnitId || null;
   }
 
-  return isAndroid ? providerConfig.admobAndroidBannerUnitId || androidTestBannerUnitId : providerConfig.admobIosBannerUnitId || iosTestBannerUnitId;
+  return isAndroid ? providerConfig.admobAndroidBannerUnitId || null : providerConfig.admobIosBannerUnitId || null;
 }
 
 function initializeGoogleMobileAds() {
@@ -343,13 +296,14 @@ async function showGoogleAppOpenAd() {
   const appOpenAdFactory = mobileAdsModule?.AppOpenAd;
   const loadedEvent = mobileAdsModule?.AdEventType?.LOADED;
   const errorEvent = mobileAdsModule?.AdEventType?.ERROR;
+  const adUnitId = getPlatformAdUnitId('appOpen');
 
-  if (!ready || !appOpenAdFactory || !loadedEvent || !errorEvent) {
+  if (!ready || !appOpenAdFactory || !loadedEvent || !errorEvent || !adUnitId) {
     return false;
   }
 
   return new Promise<boolean>((resolve) => {
-    const appOpenAd = appOpenAdFactory.createForAdRequest(getPlatformAdUnitId('appOpen'), nonPersonalizedRequestOptions);
+    const appOpenAd = appOpenAdFactory.createForAdRequest(adUnitId, nonPersonalizedRequestOptions);
     const subscriptions: Array<() => void> = [];
     let settled = false;
 
@@ -381,7 +335,7 @@ async function showGoogleAppOpenAd() {
   });
 }
 
-function AdBadge({ label = 'AD' }: { label?: string }) {
+function AdBadge({ label = '광고' }: { label?: string }) {
   return (
     <View style={styles.badge}>
       <Text style={styles.badgeText}>{label}</Text>
@@ -435,14 +389,15 @@ function GoogleBannerAd({
   const mobileAdsModule = getGoogleMobileAdsModule();
   const BannerAd = mobileAdsModule?.BannerAd;
   const bannerSize = mobileAdsModule?.BannerAdSize?.ANCHORED_ADAPTIVE_BANNER ?? mobileAdsModule?.BannerAdSize?.BANNER;
+  const adUnitId = getPlatformAdUnitId('banner');
 
   useEffect(() => {
-    if (state === 'unavailable' || (state === 'ready' && (!BannerAd || !bannerSize))) {
+    if (state === 'unavailable' || (state === 'ready' && (!BannerAd || !bannerSize || !adUnitId))) {
       onUnavailable();
     }
-  }, [BannerAd, bannerSize, onUnavailable, state]);
+  }, [BannerAd, adUnitId, bannerSize, onUnavailable, state]);
 
-  if (state !== 'ready' || !BannerAd || !bannerSize) {
+  if (state !== 'ready' || !BannerAd || !bannerSize || !adUnitId) {
     return null;
   }
 
@@ -452,7 +407,7 @@ function GoogleBannerAd({
         onAdFailedToLoad={onUnavailable}
         requestOptions={nonPersonalizedRequestOptions}
         size={bannerSize}
-        unitId={getPlatformAdUnitId('banner')}
+        unitId={adUnitId}
       />
     </View>
   );
@@ -491,7 +446,9 @@ export function BottomBannerAd({
 
   return (
     <View style={[styles.bottomBanner, { backgroundColor: campaign.background }, style]}>
-      <View style={[styles.bannerMark, { backgroundColor: campaign.accent }]} />
+      <View style={styles.bannerIcon}>
+        <Megaphone color={campaign.accent} size={18} />
+      </View>
       <View style={styles.bannerCopy}>
         <View style={styles.adMetaRow}>
           <AdBadge />
@@ -567,7 +524,7 @@ export function AnalysisSponsorCard() {
     return (
       <View style={styles.analysisWaiting}>
         <ActivityIndicator color={colors.primary} />
-        <Text style={styles.analysisWaitingText}>같은 시험 제보를 기준으로 위치를 계산하고 있어요.</Text>
+        <Text style={styles.analysisWaitingText}>분포 계산 중</Text>
       </View>
     );
   }
@@ -577,8 +534,8 @@ export function AnalysisSponsorCard() {
       <View style={styles.analysisWaiting}>
         <ActivityIndicator color={campaign.accent} />
         <View style={styles.analysisWaitingCopy}>
-          <Text style={styles.analysisWaitingTitle}>잠시만요</Text>
-          <Text style={styles.analysisWaitingText}>같은 시험 제보를 기준으로 위치를 계산하고 있어요.</Text>
+          <Text style={styles.analysisWaitingTitle}>분포 정리 중</Text>
+          <Text style={styles.analysisWaitingText}>제보 기준 참고값 준비 중</Text>
         </View>
       </View>
       <View style={styles.analysisDivider} />
@@ -650,7 +607,7 @@ export function AppOpenAd() {
   const { trackClick, trackFeedback, trackImpression } = useAdTracking(campaign, placement, visible);
 
   useEffect(() => {
-    if (profile.verificationStatus !== 'approved' || !profile.id) {
+    if (!providerConfig.enableAppOpenAds || profile.verificationStatus !== 'approved' || !profile.id) {
       return;
     }
 
@@ -687,6 +644,10 @@ export function AppOpenAd() {
       }
     };
   }, [profile.id, profile.verificationStatus, trackImpression]);
+
+  if (!providerConfig.enableAppOpenAds) {
+    return null;
+  }
 
   const close = () => setVisible(false);
 
@@ -773,7 +734,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   analysisDivider: {
-    backgroundColor: 'rgba(23, 32, 42, 0.08)',
+    backgroundColor: 'rgba(16, 24, 32, 0.08)',
     height: 1,
   },
   analysisSponsor: {
@@ -864,9 +825,15 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     minWidth: 0,
   },
-  bannerMark: {
+  bannerIcon: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderRadius: radii.pill,
-    width: 4,
+    borderWidth: 1,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
   },
   bannerRight: {
     alignItems: 'flex-end',
@@ -961,7 +928,7 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     alignItems: 'center',
-    backgroundColor: 'rgba(23, 32, 42, 0.42)',
+    backgroundColor: 'rgba(16, 24, 32, 0.38)',
     flex: 1,
     justifyContent: 'center',
     padding: spacing.lg,

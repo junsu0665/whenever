@@ -16,7 +16,9 @@ import {
 } from 'lucide-react-native';
 
 import { Card } from '../components/Card';
+import { EmptyState } from '../components/EmptyState';
 import { Screen } from '../components/Screen';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionHeader } from '../components/SectionHeader';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { colors, fonts, radii, spacing, typography } from '../theme';
@@ -92,16 +94,16 @@ export function AdminScreen() {
 
   return (
     <Screen>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>관리자</Text>
-          <Text style={styles.subtitle}>{profile.schoolName} 운영 관리</Text>
-        </View>
-        <View style={styles.adminMark}>
-          <Shield color={colors.primary} size={18} />
-          <Text style={styles.adminMarkText}>Admin</Text>
-        </View>
-      </View>
+      <ScreenHeader
+        action={
+          <View style={styles.adminMark}>
+            <Shield color={colors.primary} size={18} />
+            <Text style={styles.adminMarkText}>Admin</Text>
+          </View>
+        }
+        subtitle={`${profile.schoolName} 운영 관리`}
+        title="관리자"
+      />
 
       <View style={styles.metricGrid}>
         {metrics.map((metric) => (
@@ -216,7 +218,7 @@ function DashboardPanel({
             </View>
           ))
         ) : (
-          <EmptyState icon={<Flag color={colors.subtle} size={24} />} text="아직 신고 통계가 없습니다." />
+          <EmptyState compact icon={<Flag color={colors.subtle} size={22} />} title="아직 신고 통계가 없어요." />
         )}
       </Card>
 
@@ -237,7 +239,7 @@ function DashboardPanel({
             </View>
           ))
         ) : (
-          <EmptyState icon={<Users color={colors.subtle} size={24} />} text="주의가 필요한 사용자가 없습니다." />
+          <EmptyState compact icon={<Users color={colors.subtle} size={22} />} title="주의가 필요한 사용자가 없어요." />
         )}
       </Card>
     </>
@@ -286,7 +288,7 @@ function ReportsPanel({
           const parentPost = comment ? posts.find((item) => item.id === comment.postId) : undefined;
           const targetHidden = report.targetType === 'post' ? Boolean(post?.hidden) : Boolean(comment?.hidden);
           const title = post?.title ?? parentPost?.title ?? '삭제된 대상';
-          const body = post?.body ?? comment?.body ?? '대상을 찾을 수 없습니다.';
+          const body = post?.body ?? comment?.body ?? '대상을 찾을 수 없어요.';
 
           return (
             <View key={report.id} style={styles.row}>
@@ -346,7 +348,7 @@ function ReportsPanel({
           );
         })
       ) : (
-        <EmptyState icon={<Flag color={colors.subtle} size={24} />} text="처리할 신고가 없습니다." />
+        <EmptyState compact icon={<Flag color={colors.subtle} size={22} />} title="처리할 신고가 없어요." />
       )}
     </Card>
   );
@@ -406,7 +408,7 @@ function UsersPanel({
                   <AdminActionButton
                     icon={<XCircle color={colors.danger} size={15} />}
                     label="반려"
-                    onPress={() => onReviewVerification(user.id, 'rejected', '학생증 정보가 선명하지 않습니다.')}
+                    onPress={() => onReviewVerification(user.id, 'rejected', '학생증 정보가 선명하지 않아요.')}
                     tone="danger"
                   />
                 </>
@@ -474,7 +476,7 @@ function PostsPanel({
           </View>
         ))
       ) : (
-        <EmptyState icon={<MessageSquareText color={colors.subtle} size={24} />} text="관리할 글이 없습니다." />
+        <EmptyState compact icon={<MessageSquareText color={colors.subtle} size={22} />} title="관리할 글이 없어요." />
       )}
     </Card>
   );
@@ -508,7 +510,7 @@ function VerificationsPanel({
             <View key={verification.id} style={styles.row}>
               <View style={styles.verificationRow}>
                 {verification.displayUri ? (
-                  <Image source={{ uri: verification.displayUri }} style={styles.studentCardImage} />
+                  <Image resizeMode="cover" source={{ uri: verification.displayUri }} style={styles.studentCardImage} />
                 ) : (
                   <View style={styles.studentCardEmpty}>
                     <IdCard color={colors.subtle} size={22} />
@@ -520,7 +522,7 @@ function VerificationsPanel({
                     <StatusBadge label={verificationLabel[verification.status]} tone={verificationTone(verification.status)} />
                   </View>
                   <Text style={styles.rowBody}>
-                    {user ? `${user.schoolName} · ${formatGradeClass(user.grade, user.className)}` : '사용자 정보를 찾을 수 없습니다.'}
+                    {user ? `${user.schoolName} · ${formatGradeClass(user.grade, user.className)}` : '사용자 정보를 찾을 수 없어요.'}
                   </Text>
                   <Text style={styles.metaText}>제출 {formatDate(verification.submittedAt)}</Text>
                   {verification.rejectionReason ? <Text style={styles.reasonText}>{verification.rejectionReason}</Text> : null}
@@ -537,7 +539,7 @@ function VerificationsPanel({
                   <AdminActionButton
                     icon={<XCircle color={colors.danger} size={15} />}
                     label="반려"
-                    onPress={() => onReviewVerification(verification.userId, 'rejected', '학생증 정보가 선명하지 않습니다.')}
+                    onPress={() => onReviewVerification(verification.userId, 'rejected', '학생증 정보가 선명하지 않아요.')}
                     tone="danger"
                   />
                 </View>
@@ -546,7 +548,7 @@ function VerificationsPanel({
           );
         })
       ) : (
-        <EmptyState icon={<IdCard color={colors.subtle} size={24} />} text="검수할 학생증이 없습니다." />
+        <EmptyState compact icon={<IdCard color={colors.subtle} size={22} />} title="검수할 학생증이 없어요." />
       )}
     </Card>
   );
@@ -570,20 +572,16 @@ function AdminActionButton({
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
-      style={[styles.actionButton, getActionToneStyle(tone), disabled ? styles.actionButtonDisabled : null]}
+      style={({ pressed }) => [
+        styles.actionButton,
+        getActionToneStyle(tone),
+        disabled ? styles.actionButtonDisabled : null,
+        pressed && !disabled ? styles.actionButtonPressed : null,
+      ]}
     >
       {icon}
-      <Text style={[styles.actionButtonText, tone === 'danger' ? styles.actionButtonTextDanger : null]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.actionButtonText, tone === 'danger' ? styles.actionButtonTextDanger : null]}>{label}</Text>
     </Pressable>
-  );
-}
-
-function EmptyState({ icon, text }: { icon: ReactNode; text: string }) {
-  return (
-    <View style={styles.emptyState}>
-      {icon}
-      <Text style={styles.emptyText}>{text}</Text>
-    </View>
   );
 }
 
@@ -647,6 +645,10 @@ const styles = StyleSheet.create({
   actionButtonDisabled: {
     opacity: 0.45,
   },
+  actionButtonPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
+  },
   actionButtonText: {
     color: colors.text,
     fontFamily: fonts.semibold,
@@ -703,23 +705,6 @@ const styles = StyleSheet.create({
   },
   dangerBadge: {
     backgroundColor: colors.dangerSoft,
-  },
-  emptyState: {
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.xl,
-  },
-  emptyText: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.body,
-    lineHeight: 22,
-    textAlign: 'center',
-  },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
   },
   inlineTitle: {
     alignItems: 'center',
@@ -837,6 +822,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
     borderColor: colors.border,
+    borderCurve: 'continuous',
     borderRadius: radii.md,
     borderStyle: 'dashed',
     borderWidth: 1,
@@ -846,6 +832,7 @@ const styles = StyleSheet.create({
   },
   studentCardImage: {
     backgroundColor: colors.surfaceAlt,
+    borderCurve: 'continuous',
     borderRadius: radii.md,
     height: 72,
     width: 108,
@@ -876,18 +863,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.semibold,
     fontSize: typography.h2,
-    fontWeight: '600',
-  },
-  subtitle: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.small,
-    marginTop: spacing.xs,
-  },
-  title: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.h1,
     fontWeight: '600',
   },
   verificationRow: {

@@ -12,13 +12,14 @@ import {
 import {
   Check,
   CheckCircle2,
-  GraduationCap,
+  KeyRound,
   LockKeyhole,
-  Mail,
   Search,
+  Smartphone,
   UserRound,
 } from 'lucide-react-native';
 
+import { BrandLogo } from '../components/BrandLogo';
 import { Card } from '../components/Card';
 import { LegalPolicyModal } from '../components/LegalPolicyModal';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -27,28 +28,44 @@ import { searchSchoolsByName } from '../services/neis';
 import { colors, fonts, radii, spacing, typography } from '../theme';
 import { useAppState } from '../state/AppStateContext';
 import { School } from '../types';
-import { formatClassName } from '../utils/profile';
+import { getFriendlyErrorMessage } from '../utils/errorMessages';
+import { formatClassName, formatPhoneNumberInput, isValidKoreanMobileNumber, normalizeKoreanMobileNumber } from '../utils/profile';
 
 type AuthMode = 'signin' | 'signup';
+type SignupStep = 'account' | 'profile';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const minimumPasswordLength = 8;
 const normalizeSchoolKeyword = (value: string) => value.replace(/\s/g, '').toLowerCase();
+const signupSteps: { key: SignupStep; title: string }[] = [
+  { key: 'account', title: '이메일' },
+  { key: 'profile', title: '본인 확인' },
+];
 
 function mergeSchools(schoolLists: School[][]) {
   const seen = new Set<string>();
   const merged: School[] = [];
 
   schoolLists.flat().forEach((school) => {
-    const key = school.schoolCode || school.id;
+    const name = getSchoolDisplayName(school);
+    if (!name) {
+      return;
+    }
+
+    const key = school.schoolCode || school.id || name;
     if (!key || seen.has(key)) {
       return;
     }
 
     seen.add(key);
-    merged.push(school);
+    merged.push({ ...school, name });
   });
 
   return merged;
+}
+
+function getSchoolDisplayName(school: School | null | undefined) {
+  return school?.name?.trim() ?? '';
 }
 
 export function AuthScreen() {
@@ -64,10 +81,13 @@ export function AuthScreen() {
   } = useAppState();
   const { width } = useWindowDimensions();
   const isWide = width >= 760;
-  const [mode, setMode] = useState<AuthMode>('signin');
-  const [email, setEmail] = useState('');
+  const [mode, setMode] = useState<AuthMode>('signup');
+  const [signupStep, setSignupStep] = useState<SignupStep>('account');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [name, setName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [grade, setGrade] = useState(1);
   const [className, setClassName] = useState('');
   const [schoolId, setSchoolId] = useState(schools[0]?.id ?? '');
@@ -77,64 +97,110 @@ export function AuthScreen() {
   const [schoolSearchLoading, setSchoolSearchLoading] = useState(false);
   const [schoolSearchError, setSchoolSearchError] = useState<string | null>(null);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [emailTouched, setEmailTouched] = useState(false);
+  const [loginIdTouched, setLoginIdTouched] = useState(false);
   const [legalVisible, setLegalVisible] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
+  const [passwordConfirmTouched, setPasswordConfirmTouched] = useState(false);
+  const [phoneTouched, setPhoneTouched] = useState(false);
 
-  const collectingProfile = mode === 'signup' || needsProfile;
-  const normalizedEmail = email.trim().toLowerCase();
-  const emailReady = emailPattern.test(normalizedEmail);
-  const passwordReady = password.length >= 6;
+  const showSignupWizard = mode === 'signup' && !needsProfile;
+  const signupStepIndex = signupSteps.findIndex((step) => step.key === signupStep);
+  const collectingProfile = needsProfile || (showSignupWizard && signupStep === 'profile');
+  const normalizedLoginId = loginId.trim().toLowerCase();
+  const emailReady = emailPattern.test(normalizedLoginId);
+  const signInPasswordReady = password.length > 0;
+  const passwordCriteria = useMemo(
+    () => [
+      { key: 'length', label: `${minimumPasswordLength}자 이상`, met: password.length >= minimumPasswordLength },
+      { key: 'letter', label: '영문 포함', met: /[A-Za-z]/.test(password) },
+      { key: 'number', label: '숫자 포함', met: /\d/.test(password) },
+    ],
+    [password],
+  );
+  const signupPasswordReady = passwordCriteria.every((criterion) => criterion.met);
+  const passwordConfirmReady = Boolean(passwordConfirm) && passwordConfirm === password;
+  const phoneReady = isValidKoreanMobileNumber(phoneNumber);
+  const accountStepReady = emailReady && signupPasswordReady && passwordConfirmReady;
   const displayAuthError = formatAuthMessage(authError);
-  const pageTitle = needsProfile ? '프로필 입력' : mode === 'signin' ? '로그인' : '회원가입';
-  const pageDescription = needsProfile
-    ? '이름, 학교, 학년, 반을 입력해 주세요.'
+  const pageTitle = needsProfile
+    ? '프로필 입력'
     : mode === 'signin'
-      ? '이메일과 비밀번호를 입력해 주세요.'
-      : '이메일과 비밀번호를 입력해 주세요.';
-  const submitLabel = needsProfile ? '프로필 저장' : mode === 'signin' ? '로그인' : '회원가입';
-  const showEmailError = emailTouched && Boolean(email.trim()) && !emailReady;
-  const showPasswordError = passwordTouched && Boolean(password) && !passwordReady;
+      ? '로그인'
+      : '회원가입';
+  const pageSubtitle = needsProfile
+    ? '프로필 정보를 입력하세요.'
+    : mode === 'signin'
+      ? '이메일과 비밀번호를 입력하세요.'
+      : signupStep === 'account'
+        ? '이메일과 비밀번호를 입력하세요.'
+        : '프로필 정보를 입력하세요.';
+  const submitLabel = needsProfile ? '저장' : mode === 'signin' ? '로그인' : signupStep === 'profile' ? '가입 완료' : '다음';
+  const showLoginIdError = mode === 'signup' && loginIdTouched && Boolean(loginId.trim()) && !emailReady;
+  const showPasswordError = mode === 'signup' && passwordTouched && Boolean(password) && !signupPasswordReady;
+  const showPasswordConfirmError = mode === 'signup' && passwordConfirmTouched && Boolean(passwordConfirm) && !passwordConfirmReady;
+  const showPhoneError = collectingProfile && phoneTouched && Boolean(phoneNumber.trim()) && !phoneReady;
   const localSchoolMatches = useMemo(() => {
     const query = normalizeSchoolKeyword(schoolQuery);
     if (!query) {
-      return schools.slice(0, 12);
+      return schools.filter((school) => getSchoolDisplayName(school)).slice(0, 12);
     }
 
     return schools
-      .filter((school) => normalizeSchoolKeyword(`${school.name}${school.region}${school.officeCode}${school.schoolCode}`).includes(query))
+      .filter((school) => {
+        const schoolName = getSchoolDisplayName(school);
+        return Boolean(schoolName) && normalizeSchoolKeyword(`${schoolName}${school.region}${school.officeCode}${school.schoolCode}`).includes(query);
+      })
       .slice(0, 20);
   }, [schoolQuery, schools]);
   const schoolOptions = useMemo(() => {
     if (!schoolQuery.trim()) {
-      return mergeSchools([[selectedSchoolDraft].filter((school): school is School => Boolean(school)), localSchoolMatches]).slice(0, 12);
+      const selected = [selectedSchoolDraft].filter((school): school is School => Boolean(school && getSchoolDisplayName(school)));
+      return selected.length ? selected : localSchoolMatches.slice(0, 3);
     }
 
-    return mergeSchools([localSchoolMatches, remoteSchools]).slice(0, 24);
+    return mergeSchools([localSchoolMatches, remoteSchools]).slice(0, 6);
   }, [localSchoolMatches, remoteSchools, schoolQuery, selectedSchoolDraft]);
   const selectedSchool =
     selectedSchoolDraft?.id === schoolId
       ? selectedSchoolDraft
       : schoolOptions.find((school) => school.id === schoolId) ?? schools.find((school) => school.id === schoolId);
-  const selectedSchoolId = selectedSchool?.id ?? '';
+  const selectedSchoolName = getSchoolDisplayName(selectedSchool);
+  const selectedSchoolId = selectedSchoolName ? selectedSchool?.id ?? '' : '';
   const showSchoolSearchHint = collectingProfile && schoolQuery.trim().length === 1;
   const showNoSchoolResults =
     collectingProfile && schoolQuery.trim().length >= 2 && !schoolSearchLoading && !schoolSearchError && schoolOptions.length === 0;
+  const showSchoolOptions = collectingProfile && schoolQuery.trim().length >= 2 && schoolOptions.length > 0;
+  const profileStepReady = Boolean(name.trim() && phoneReady && className.trim() && selectedSchool && selectedSchoolName && acceptedTerms);
+  const signupReady = accountStepReady && profileStepReady;
   const canSubmit = useMemo(() => {
     if (authLoading) {
       return false;
     }
 
     if (needsProfile) {
-      return Boolean(name.trim() && className.trim() && selectedSchool && acceptedTerms);
+      return profileStepReady;
     }
 
     if (mode === 'signin') {
-      return Boolean(emailReady && passwordReady);
+      return Boolean(normalizedLoginId && signInPasswordReady);
     }
 
-    return Boolean(emailReady && passwordReady && name.trim() && className.trim() && selectedSchool && acceptedTerms);
-  }, [acceptedTerms, authLoading, className, emailReady, mode, name, needsProfile, passwordReady, selectedSchool]);
+    if (signupStep === 'account') {
+      return accountStepReady;
+    }
+
+    return signupReady;
+  }, [
+    accountStepReady,
+    authLoading,
+    mode,
+    needsProfile,
+    normalizedLoginId,
+    profileStepReady,
+    signInPasswordReady,
+    signupReady,
+    signupStep,
+  ]);
 
   useEffect(() => {
     if (!schools.length || schools.some((school) => school.id === schoolId) || selectedSchoolDraft?.id === schoolId) {
@@ -171,7 +237,7 @@ export function AuthScreen() {
         .catch(() => {
           if (!canceled) {
             setRemoteSchools([]);
-            setSchoolSearchError('학교 검색에 실패했습니다. 학교명을 다시 입력해 주세요.');
+            setSchoolSearchError('학교 검색에 실패했어요. 학교명을 다시 입력해 주세요.');
           }
         })
         .finally(() => {
@@ -188,126 +254,182 @@ export function AuthScreen() {
   }, [collectingProfile, schoolQuery]);
 
   const submit = async () => {
-    const profileInput = {
+    const buildProfileInput = () => ({
       name: name.trim(),
+      phoneNumber: normalizeKoreanMobileNumber(phoneNumber),
       schoolId: selectedSchool?.id ?? selectedSchoolId,
       school: selectedSchool,
       grade,
       className: formatClassName(className),
-    };
+    });
 
     if (needsProfile) {
-      await completeProfile(profileInput);
+      await completeProfile(buildProfileInput());
       return;
     }
 
     if (mode === 'signin') {
-      await signIn(normalizedEmail, password);
+      await signIn(normalizedLoginId, password);
       return;
     }
 
-    await signUp(normalizedEmail, password, profileInput);
+    await signUp(normalizedLoginId, password, buildProfileInput());
+  };
+
+  const goToNextSignupStep = () => {
+    const nextStep = signupSteps[signupStepIndex + 1];
+    if (nextStep) {
+      setSignupStep(nextStep.key);
+    }
+  };
+
+  const goToPreviousSignupStep = () => {
+    const previousStep = signupSteps[signupStepIndex - 1];
+    if (previousStep) {
+      setSignupStep(previousStep.key);
+    }
+  };
+
+  const handlePrimaryAction = async () => {
+    if (showSignupWizard && signupStep !== 'profile') {
+      goToNextSignupStep();
+      return;
+    }
+
+    await submit();
   };
 
   const switchMode = (nextMode: AuthMode) => {
     setMode(nextMode);
+    setSignupStep('account');
+    setLoginIdTouched(false);
     setPasswordTouched(false);
+    setPasswordConfirmTouched(false);
+    setPhoneTouched(false);
+    setPasswordConfirm('');
   };
 
   const selectSchool = (school: School) => {
     setSchoolId(school.id);
     setSelectedSchoolDraft(school);
-    setSchoolQuery(school.name);
+    setSchoolQuery(getSchoolDisplayName(school));
   };
 
+  const updateLoginId = (value: string) => {
+    setLoginId(value.replace(/\s/g, '').toLowerCase());
+  };
+
+  const authFormKey = needsProfile ? 'needs-profile' : mode === 'signin' ? 'signin' : signupStep;
+
   return (
-    <Screen>
+    <Screen backgroundColor={colors.background} contentStyle={styles.screenContent}>
       <View style={[styles.shell, isWide ? styles.shellWide : null]}>
         <View style={[styles.hero, isWide ? styles.heroWide : null]}>
-          <View style={styles.brandLockup}>
-            <View style={styles.logo}>
-              <GraduationCap color={colors.primary} size={30} strokeWidth={2.15} />
-            </View>
-            <View>
-              <Text style={styles.brand}>웨네버</Text>
-              <Text style={styles.brandMeta}>학교 인증 기반 커뮤니티</Text>
-            </View>
+          <View style={styles.logo}>
+            <BrandLogo width={126} />
           </View>
-
           <View style={styles.heroCopy}>
-            <Text style={styles.heroTitle}>학교 생활을 한 곳에서.</Text>
-            <Text style={styles.subtitle}>시간표, 급식, 게시판을 빠르게 확인하세요.</Text>
+            <Text style={styles.heroTitle}>{pageTitle}</Text>
+            <Text style={styles.heroSubtitle}>{pageSubtitle}</Text>
           </View>
         </View>
 
         <Card style={[styles.authCard, isWide ? styles.authCardWide : null]}>
-          <View style={styles.cardHeader}>
-            <View style={styles.headerIcon}>
-              {authLoading ? <ActivityIndicator color={colors.primary} /> : <LockKeyhole color={colors.primary} size={22} />}
-            </View>
-            <View style={styles.headerCopy}>
-              <Text style={styles.cardTitle}>{pageTitle}</Text>
-              <Text style={styles.cardDescription}>{pageDescription}</Text>
-            </View>
-          </View>
-
-          {!needsProfile ? (
-            <View style={styles.modeTabs}>
-              <ModeTab active={mode === 'signin'} label="로그인" onPress={() => switchMode('signin')} />
-              <ModeTab active={mode === 'signup'} label="회원가입" onPress={() => switchMode('signup')} />
-            </View>
+          {showSignupWizard ? (
+            <SignupStepStrip currentStep={signupStep} />
           ) : null}
 
-          {!needsProfile ? (
-            <View style={styles.formSection}>
-              <LabeledInput
-                autoCapitalize="none"
-                autoComplete="email"
-                icon={<Mail color={colors.muted} size={18} />}
-                keyboardType="email-address"
-                label="이메일"
-                onBlur={() => setEmailTouched(true)}
-                onChangeText={setEmail}
-                placeholder="student@example.com"
-                returnKeyType="next"
-                textContentType="emailAddress"
-                value={email}
-              />
-              {showEmailError ? <FieldMessage text="이메일 형식을 확인해 주세요." tone="danger" /> : null}
+          <View key={authFormKey} style={styles.animatedForm}>
+            {!needsProfile && (mode === 'signin' || signupStep === 'account') ? (
+              <View style={styles.formSection}>
+                <LabeledInput
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  icon={<UserRound color={colors.muted} size={18} />}
+                  keyboardType="email-address"
+                  label="이메일"
+                  onBlur={() => setLoginIdTouched(true)}
+                  onChangeText={updateLoginId}
+                  placeholder="예: name@example.com"
+                  returnKeyType="next"
+                  textContentType="emailAddress"
+                  value={loginId}
+                />
+                {showLoginIdError ? <FieldMessage text="이메일 형식을 확인해 주세요." tone="danger" /> : null}
 
-              <LabeledInput
-                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                icon={<LockKeyhole color={colors.muted} size={18} />}
-                label="비밀번호"
-                onBlur={() => setPasswordTouched(true)}
-                onChangeText={setPassword}
-                placeholder="6자 이상"
-                returnKeyType={mode === 'signin' ? 'done' : 'next'}
-                secureTextEntry
-                textContentType={mode === 'signin' ? 'password' : 'newPassword'}
-                value={password}
-              />
-              {showPasswordError ? <FieldMessage text="비밀번호는 6자 이상이어야 합니다." tone="danger" /> : null}
-              {mode === 'signup' && passwordReady ? <FieldMessage text="사용 가능한 비밀번호입니다." tone="success" /> : null}
-            </View>
-          ) : null}
+                <LabeledInput
+                  autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                  icon={<LockKeyhole color={colors.muted} size={18} />}
+                  label="비밀번호"
+                  onBlur={() => setPasswordTouched(true)}
+                  onChangeText={setPassword}
+                  placeholder={mode === 'signin' ? '비밀번호' : '영문+숫자 8자 이상'}
+                  returnKeyType={mode === 'signin' ? 'done' : 'next'}
+                  secureTextEntry
+                  textContentType={mode === 'signin' ? 'password' : 'newPassword'}
+                  value={password}
+                />
+                {mode === 'signup' ? (
+                  <View style={styles.criteriaList}>
+                    {passwordCriteria.map((criterion) => (
+                      <View key={criterion.key} style={styles.criteriaItem}>
+                        <CheckCircle2 color={criterion.met ? colors.success : colors.disabled} size={14} />
+                        <Text style={[styles.criteriaText, criterion.met ? styles.criteriaTextActive : null]}>{criterion.label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+                {showPasswordError ? <FieldMessage text="비밀번호 기준을 모두 충족해 주세요." tone="danger" /> : null}
 
-          {collectingProfile ? (
-            <View style={styles.formSection}>
-              <View style={styles.sectionTitleRow}>
-                <Text style={styles.sectionTitle}>학교 프로필</Text>
+                {mode === 'signup' ? (
+                  <>
+                    <LabeledInput
+                      autoComplete="new-password"
+                      icon={<KeyRound color={colors.muted} size={18} />}
+                      label="비밀번호 확인"
+                      onBlur={() => setPasswordConfirmTouched(true)}
+                      onChangeText={setPasswordConfirm}
+                      placeholder="비밀번호를 다시 입력"
+                      returnKeyType="next"
+                      secureTextEntry
+                      textContentType="newPassword"
+                      value={passwordConfirm}
+                    />
+                    {showPasswordConfirmError ? <FieldMessage text="비밀번호가 일치하지 않아요." tone="danger" /> : null}
+                    {passwordConfirmReady ? <FieldMessage text="비밀번호가 일치해요." tone="success" /> : null}
+                  </>
+                ) : null}
               </View>
+            ) : null}
 
-              <LabeledInput
-                autoComplete="name"
-                icon={<UserRound color={colors.muted} size={18} />}
-                label="이름"
-                onChangeText={setName}
-                placeholder="실명"
-                returnKeyType="next"
-                textContentType="name"
-                value={name}
-              />
+            {collectingProfile ? (
+              <View style={styles.formSection}>
+                <LabeledInput
+                  autoComplete="name"
+                  icon={<UserRound color={colors.muted} size={18} />}
+                  label="이름"
+                  onChangeText={setName}
+                  placeholder="실명"
+                  returnKeyType="next"
+                  textContentType="name"
+                  value={name}
+                />
+
+                <LabeledInput
+                  autoComplete="tel"
+                  icon={<Smartphone color={colors.muted} size={18} />}
+                  keyboardType="phone-pad"
+                  label="휴대폰 번호"
+                  maxLength={13}
+                  onBlur={() => setPhoneTouched(true)}
+                  onChangeText={(value) => setPhoneNumber(formatPhoneNumberInput(value))}
+                  placeholder="010-1234-5678"
+                  returnKeyType="next"
+                  textContentType="telephoneNumber"
+                  value={phoneNumber}
+                />
+                {showPhoneError ? <FieldMessage text="010으로 시작하는 11자리 번호를 입력해 주세요." tone="danger" /> : null}
+                {phoneReady ? <FieldMessage text="휴대폰 번호는 중복 가입 방지에만 사용해요." tone="success" /> : null}
 
               <View style={styles.inputBlock}>
                 <Text style={styles.label}>학교</Text>
@@ -324,41 +446,44 @@ export function AuthScreen() {
                 </View>
               </View>
 
-              {selectedSchool ? (
+              {selectedSchool && selectedSchoolName ? (
                 <View style={styles.selectedSchool}>
                   <CheckCircle2 color={colors.primary} size={17} />
-                  <Text style={styles.selectedSchoolText}>{selectedSchool.name}</Text>
+                  <Text style={styles.selectedSchoolText}>{selectedSchoolName}</Text>
                   <Text style={styles.selectedSchoolRegion}>{selectedSchool.region}</Text>
                 </View>
               ) : null}
 
               {showSchoolSearchHint ? <Text style={styles.schoolSearchMeta}>학교명을 2글자 이상 입력해 주세요.</Text> : null}
               {schoolSearchError ? <FieldMessage text={schoolSearchError} tone="danger" /> : null}
-              {showNoSchoolResults ? <FieldMessage text="검색 결과가 없습니다." tone="danger" /> : null}
+              {showNoSchoolResults ? <FieldMessage text="검색 결과가 없어요." tone="danger" /> : null}
 
-              <View style={styles.schoolList}>
-                {schoolOptions.map((school) => {
-                  const active = selectedSchoolId === school.id;
-                  return (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                      key={school.id}
-                      onPress={() => selectSchool(school)}
-                      style={[styles.schoolChip, active ? styles.schoolChipActive : null]}
-                    >
-                      <View style={styles.schoolChipCopy}>
-                        <Text numberOfLines={1} style={[styles.schoolChipText, active ? styles.schoolChipTextActive : null]}>
-                          {school.name}
-                        </Text>
-                        <Text style={[styles.schoolChipRegion, active ? styles.schoolChipRegionActive : null]}>{school.region}</Text>
-                      </View>
-                      {active ? <Check color={colors.primary} size={14} /> : null}
-                    </Pressable>
-                  );
-                })}
-              </View>
-              {!schools.length ? <FieldMessage text="운영 DB에 schools 데이터가 필요합니다." tone="danger" /> : null}
+              {showSchoolOptions ? (
+                <View style={styles.schoolList}>
+                  {schoolOptions.map((school) => {
+                    const active = selectedSchoolId === school.id;
+                    const schoolName = getSchoolDisplayName(school);
+                    return (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
+                        key={school.id}
+                        onPress={() => selectSchool(school)}
+                        style={({ pressed }) => [styles.schoolChip, active ? styles.schoolChipActive : null, pressed && !active ? styles.schoolChipPressed : null]}
+                      >
+                        <View style={styles.schoolChipCopy}>
+                          <Text numberOfLines={1} style={[styles.schoolChipText, active ? styles.schoolChipTextActive : null]}>
+                            {schoolName}
+                          </Text>
+                          <Text style={[styles.schoolChipRegion, active ? styles.schoolChipRegionActive : null]}>{school.region}</Text>
+                        </View>
+                        {active ? <Check color={colors.primary} size={14} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+              {!schools.length ? <FieldMessage text="학교 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요." tone="danger" /> : null}
 
               <View style={styles.profileRow}>
                 <View style={styles.gradeBlock}>
@@ -370,7 +495,7 @@ export function AuthScreen() {
                         accessibilityState={{ selected: grade === value }}
                         key={value}
                         onPress={() => setGrade(value)}
-                        style={[styles.gradeChip, grade === value ? styles.gradeChipActive : null]}
+                        style={({ pressed }) => [styles.gradeChip, grade === value ? styles.gradeChipActive : null, pressed && grade !== value ? styles.gradeChipPressed : null]}
                       >
                         <Text style={[styles.gradeChipText, grade === value ? styles.gradeChipTextActive : null]}>{value}학년</Text>
                       </Pressable>
@@ -387,30 +512,50 @@ export function AuthScreen() {
                   accessibilityState={{ checked: acceptedTerms }}
                   hitSlop={8}
                   onPress={() => setAcceptedTerms(!acceptedTerms)}
-                  style={styles.termsRow}
+                  style={({ pressed }) => [styles.termsRow, pressed ? styles.termsRowPressed : null]}
                 >
                   <View style={[styles.checkbox, acceptedTerms ? styles.checkboxActive : null]}>
                     {acceptedTerms ? <Check color={colors.surface} size={15} /> : null}
                   </View>
-                  <Text style={styles.termsText}>서비스 약관, 개인정보 처리방침, 학생증 이미지 보관 정책에 동의합니다.</Text>
+                  <Text style={styles.termsText}>약관 및 개인정보 처리방침에 동의해요.</Text>
                 </Pressable>
                 <Pressable accessibilityRole="button" onPress={() => setLegalVisible(true)} style={styles.legalLink}>
-                  <Text style={styles.legalLinkText}>약관과 개인정보 처리방침 보기</Text>
+                  <Text style={styles.legalLinkText}>자세히 보기</Text>
                 </Pressable>
               </View>
-            </View>
-          ) : null}
+              </View>
+            ) : null}
+          </View>
 
           {displayAuthError ? <FeedbackBox text={displayAuthError} tone="danger" /> : null}
           {authNotice ? <FeedbackBox text={authNotice} tone="notice" /> : null}
 
-          <PrimaryButton
-            disabled={!canSubmit}
-            icon={authLoading ? <ActivityIndicator color={colors.surface} /> : undefined}
-            label={submitLabel}
-            onPress={submit}
-            style={styles.submit}
-          />
+          <View style={showSignupWizard && signupStepIndex > 0 ? styles.actionRow : null}>
+            {showSignupWizard && signupStepIndex > 0 ? (
+              <PrimaryButton
+                disabled={authLoading}
+                label="이전"
+                onPress={goToPreviousSignupStep}
+                style={styles.actionButton}
+                variant="secondary"
+              />
+            ) : null}
+            <PrimaryButton
+              disabled={!canSubmit}
+              icon={authLoading ? <ActivityIndicator color={colors.surface} /> : undefined}
+              label={submitLabel}
+              onPress={handlePrimaryAction}
+              style={showSignupWizard && signupStepIndex > 0 ? styles.actionButton : styles.submit}
+            />
+          </View>
+          {!needsProfile ? (
+            <View style={styles.authSwitch}>
+              <Text style={styles.authSwitchText}>{mode === 'signup' ? '이미 가입했어요' : '처음이에요'}</Text>
+              <Pressable accessibilityRole="button" hitSlop={8} onPress={() => switchMode(mode === 'signup' ? 'signin' : 'signup')}>
+                <Text style={styles.authSwitchLink}>{mode === 'signup' ? '로그인' : '회원가입'}</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </Card>
       </View>
       <LegalPolicyModal onClose={() => setLegalVisible(false)} visible={legalVisible} />
@@ -423,18 +568,28 @@ function formatAuthMessage(message: string | null) {
     return null;
   }
 
-  if (/failed to fetch|fetch failed|network request failed/i.test(message)) {
-    return '서버에 연결하지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.';
-  }
-
-  return message;
+  return getFriendlyErrorMessage(message, message);
 }
 
-function ModeTab({ active, label, onPress }: { active: boolean; label: string; onPress: () => void }) {
+function SignupStepStrip({ currentStep }: { currentStep: SignupStep }) {
+  const currentIndex = signupSteps.findIndex((step) => step.key === currentStep);
+  const currentTitle = signupSteps[currentIndex]?.title ?? '';
+
   return (
-    <Pressable accessibilityRole="button" accessibilityState={{ selected: active }} onPress={onPress} style={[styles.modeTab, active ? styles.modeTabActive : null]}>
-      <Text style={[styles.modeTabText, active ? styles.modeTabTextActive : null]}>{label}</Text>
-    </Pressable>
+    <View style={styles.progressBlock}>
+      <View style={styles.progressMeta}>
+        <Text style={styles.progressStep}>{currentIndex + 1}/{signupSteps.length}</Text>
+        <Text style={styles.progressTitle}>{currentTitle}</Text>
+      </View>
+      <View style={styles.progressTrack}>
+        {signupSteps.map((step, index) => (
+          <View
+            key={step.key}
+            style={[styles.progressSegment, index <= currentIndex ? styles.progressSegmentActive : null]}
+          />
+        ))}
+      </View>
+    </View>
   );
 }
 
@@ -475,7 +630,7 @@ function LabeledInput({
 }
 
 function FieldMessage({ text, tone }: { text: string; tone: 'danger' | 'success' }) {
-  return <Text style={[styles.fieldMessage, tone === 'danger' ? styles.fieldMessageDanger : styles.fieldMessageSuccess]}>{text}</Text>;
+  return <Text selectable style={[styles.fieldMessage, tone === 'danger' ? styles.fieldMessageDanger : styles.fieldMessageSuccess]}>{text}</Text>;
 }
 
 function FeedbackBox({ text, tone }: { text: string; tone: 'danger' | 'notice' }) {
@@ -489,51 +644,51 @@ function FeedbackBox({ text, tone }: { text: string; tone: 'danger' | 'notice' }
 }
 
 const styles = StyleSheet.create({
+  actionButton: {
+    flex: 1,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  animatedForm: {
+    gap: spacing.sm,
+  },
   authCard: {
-    borderColor: '#D8E8FF',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    boxShadow: '0 1px 0 rgba(14, 21, 17, 0.02)',
     gap: spacing.md,
+    padding: spacing.lg,
   },
   authCardWide: {
-    flex: 1,
-    maxWidth: 500,
+    flexGrow: 0,
+    flexShrink: 0,
+    maxWidth: 420,
+    width: 420,
   },
-  brand: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.h2,
-    fontWeight: '600',
-    lineHeight: 27,
-  },
-  brandLockup: {
+  authSwitch: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.xs,
+    justifyContent: 'center',
+    paddingTop: spacing.xs,
   },
-  brandMeta: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.small,
-    lineHeight: 20,
-    marginTop: 1,
-  },
-  cardDescription: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.small,
-    lineHeight: 20,
-    marginTop: 3,
-  },
-  cardHeader: {
-    alignItems: 'flex-start',
-    flexDirection: 'row',
-    gap: spacing.md,
-  },
-  cardTitle: {
-    color: colors.text,
+  authSwitchLink: {
+    color: colors.primary,
     fontFamily: fonts.semibold,
-    fontSize: typography.h2,
+    fontSize: typography.small,
     fontWeight: '600',
-    lineHeight: 27,
+    lineHeight: 19,
+  },
+  authSwitchText: {
+    color: colors.muted,
+    fontFamily: fonts.regular,
+    fontSize: typography.small,
+    lineHeight: 19,
   },
   checkbox: {
     alignItems: 'center',
@@ -548,6 +703,26 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
+  criteriaItem: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  criteriaList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  criteriaText: {
+    color: colors.subtle,
+    fontFamily: fonts.semibold,
+    fontSize: typography.tiny,
+    fontWeight: '600',
+    lineHeight: 17,
+  },
+  criteriaTextActive: {
+    color: colors.success,
+  },
   feedbackBox: {
     borderRadius: radii.md,
     borderWidth: 1,
@@ -556,11 +731,11 @@ const styles = StyleSheet.create({
   },
   feedbackDanger: {
     backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD2D9',
+    borderColor: colors.border,
   },
   feedbackNotice: {
     backgroundColor: colors.primarySoft,
-    borderColor: '#C9E0FF',
+    borderColor: colors.border,
   },
   feedbackText: {
     fontFamily: fonts.semibold,
@@ -579,7 +754,6 @@ const styles = StyleSheet.create({
     fontSize: typography.tiny,
     fontWeight: '600',
     lineHeight: 17,
-    marginTop: -spacing.xs,
   },
   fieldMessageDanger: {
     color: colors.danger,
@@ -607,6 +781,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
+  gradeChipPressed: {
+    backgroundColor: colors.surfacePressed,
+  },
   gradeChipText: {
     color: colors.muted,
     fontFamily: fonts.semibold,
@@ -616,33 +793,25 @@ const styles = StyleSheet.create({
   gradeChipTextActive: {
     color: colors.surface,
   },
-  headerCopy: {
-    flex: 1,
-  },
-  headerIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: '#C9E0FF',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    height: 44,
-    justifyContent: 'center',
-    width: 44,
-  },
   hero: {
-    gap: spacing.lg,
-    paddingHorizontal: spacing.sm,
-    paddingTop: spacing.md,
+    gap: spacing.md,
+    paddingTop: spacing.lg,
   },
   heroCopy: {
-    gap: spacing.sm,
+    gap: spacing.xs,
   },
   heroTitle: {
     color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: 32,
-    fontWeight: '600',
-    lineHeight: 39,
+    fontFamily: fonts.bold,
+    fontSize: 27,
+    fontWeight: '700',
+    lineHeight: 36,
+  },
+  heroSubtitle: {
+    color: colors.muted,
+    fontFamily: fonts.regular,
+    fontSize: typography.body,
+    lineHeight: 23,
   },
   heroWide: {
     flex: 1,
@@ -662,7 +831,7 @@ const styles = StyleSheet.create({
   },
   inputWrap: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radii.md,
     borderWidth: 1,
@@ -695,60 +864,10 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   logo: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: '#C9E0FF',
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    height: 58,
+    alignItems: 'flex-start',
+    height: 64,
     justifyContent: 'center',
-    width: 58,
-  },
-  modeTab: {
-    alignItems: 'center',
-    borderRadius: radii.pill,
-    flex: 1,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  modeTabActive: {
-    backgroundColor: colors.surface,
-    borderColor: '#D8E8FF',
-    borderWidth: 1,
-  },
-  modeTabText: {
-    color: colors.muted,
-    fontFamily: fonts.semibold,
-    fontSize: typography.small,
-    fontWeight: '600',
-  },
-  modeTabTextActive: {
-    color: colors.primary,
-  },
-  modeTabs: {
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radii.pill,
-    flexDirection: 'row',
-    gap: spacing.xs,
-    padding: spacing.xs,
-  },
-  privacyNote: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderColor: '#C9E0FF',
-    borderRadius: radii.md,
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  privacyText: {
-    color: colors.primaryDark,
-    flex: 1,
-    fontFamily: fonts.regular,
-    fontSize: typography.tiny,
-    lineHeight: 17,
+    width: 132,
   },
   profileGrid: {
     flexDirection: 'row',
@@ -765,18 +884,24 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radii.md,
     borderWidth: 1,
+    alignSelf: 'stretch',
     flexDirection: 'row',
     gap: spacing.sm,
     minHeight: 50,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
+    width: '100%',
   },
   schoolChipActive: {
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
   },
   schoolChipCopy: {
-    maxWidth: 190,
+    flex: 1,
+    minWidth: 0,
+  },
+  schoolChipPressed: {
+    backgroundColor: colors.surfacePressed,
   },
   schoolChipRegion: {
     color: colors.subtle,
@@ -799,8 +924,6 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   schoolList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: spacing.sm,
   },
   schoolSearchMeta: {
@@ -809,41 +932,17 @@ const styles = StyleSheet.create({
     fontSize: typography.tiny,
     lineHeight: 17,
   },
-  secureFooter: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.xs,
-    justifyContent: 'center',
-  },
-  secureFooterText: {
-    color: colors.subtle,
-    flexShrink: 1,
-    fontFamily: fonts.regular,
-    fontSize: typography.tiny,
-    lineHeight: 17,
-    textAlign: 'center',
-  },
-  sectionCaption: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.tiny,
-    lineHeight: 17,
-  },
-  sectionTitle: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.h3,
-    fontWeight: '600',
-    lineHeight: 22,
-  },
-  sectionTitleRow: {
-    gap: 2,
-    paddingTop: spacing.xs,
+  screenContent: {
+    flexGrow: 1,
+    maxWidth: 1040,
+    paddingBottom: 42,
+    paddingHorizontal: 28,
+    paddingTop: 34,
   },
   selectedSchool: {
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderColor: '#D8E8FF',
+    borderColor: colors.border,
     borderRadius: radii.md,
     borderWidth: 1,
     flexDirection: 'row',
@@ -878,66 +977,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 680,
   },
-  stepCaption: {
-    color: colors.subtle,
-    fontFamily: fonts.regular,
-    fontSize: 11,
-    lineHeight: 14,
-  },
-  stepCopy: {
-    gap: 1,
-  },
-  stepIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    height: 28,
-    justifyContent: 'center',
-    width: 28,
-  },
-  stepIconActive: {
-    backgroundColor: colors.primarySoft,
-    borderColor: '#C9E0FF',
-  },
-  stepItem: {
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    flex: 1,
-    flexDirection: 'row',
-    gap: spacing.xs,
-    minHeight: 58,
-    paddingHorizontal: spacing.sm,
-  },
-  stepItemActive: {
-    borderColor: '#C9E0FF',
-  },
-  stepStrip: {
-    flexDirection: 'row',
+  progressBlock: {
     gap: spacing.sm,
   },
-  stepTitle: {
-    color: colors.muted,
-    fontFamily: fonts.semibold,
-    fontSize: typography.tiny,
-    fontWeight: '600',
-    lineHeight: 16,
+  progressMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'space-between',
   },
-  stepTitleActive: {
-    color: colors.primary,
+  progressSegment: {
+    backgroundColor: colors.dividerSoft,
+    borderRadius: radii.pill,
+    flex: 1,
+    height: 6,
+  },
+  progressSegmentActive: {
+    backgroundColor: colors.primary,
+  },
+  progressStep: {
+    color: colors.subtle,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '600',
+    lineHeight: 19,
+  },
+  progressTitle: {
+    color: colors.text,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '600',
+    lineHeight: 19,
+    textAlign: 'right',
+  },
+  progressTrack: {
+    flexDirection: 'row',
+    gap: spacing.xs,
   },
   submit: {
     marginTop: spacing.xs,
-  },
-  subtitle: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.body,
-    lineHeight: 25,
   },
   termsRow: {
     alignItems: 'center',
@@ -949,6 +1027,9 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.md,
   },
+  termsRowPressed: {
+    backgroundColor: colors.surfacePressed,
+  },
   termsBlock: {
     gap: spacing.xs,
   },
@@ -958,42 +1039,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: typography.small,
     lineHeight: 20,
-  },
-  trustCaption: {
-    color: colors.subtle,
-    fontFamily: fonts.regular,
-    fontSize: typography.tiny,
-    lineHeight: 17,
-    marginTop: 2,
-  },
-  trustGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  trustIcon: {
-    alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: radii.pill,
-    height: 30,
-    justifyContent: 'center',
-    marginBottom: spacing.sm,
-    width: 30,
-  },
-  trustItem: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    flex: 1,
-    minWidth: 132,
-    padding: spacing.md,
-  },
-  trustTitle: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.small,
-    fontWeight: '600',
-    lineHeight: 19,
   },
 });

@@ -1,7 +1,8 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, fonts, spacing, typography } from '../theme';
+import { hapticToggle } from '../utils/haptics';
 
 interface ToggleRowProps {
   title: string;
@@ -11,21 +12,64 @@ interface ToggleRowProps {
 }
 
 export function ToggleRow({ title, description, value, onValueChange }: ToggleRowProps) {
+  const progress = useRef(new Animated.Value(value ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.spring(progress, {
+      toValue: value ? 1 : 0,
+      friction: 9,
+      tension: 170,
+      useNativeDriver: false,
+    }).start();
+  }, [progress, value]);
+
+  const handleToggle = () => {
+    const nextValue = !value;
+    hapticToggle(nextValue);
+    onValueChange(nextValue);
+  };
+
   return (
-    <View style={styles.row}>
+    <Pressable
+      accessibilityHint={description}
+      accessibilityLabel={title}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: value }}
+      onPress={handleToggle}
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+    >
       <View style={styles.copy}>
         <Text style={styles.title}>{title}</Text>
         <Text style={styles.description}>{description}</Text>
       </View>
-      <Pressable
-        accessibilityRole="switch"
-        accessibilityState={{ checked: value }}
-        onPress={() => onValueChange(!value)}
-        style={[styles.switchTrack, value && styles.switchTrackOn]}
+      <Animated.View
+        style={[
+          styles.switchTrack,
+          {
+            backgroundColor: progress.interpolate({
+              inputRange: [0, 1],
+              outputRange: [colors.dividerSoft, colors.primary],
+            }),
+            borderColor: progress.interpolate({
+              inputRange: [0, 1],
+              outputRange: ['rgba(255,255,255,0)', colors.primaryDark],
+            }),
+          },
+        ]}
       >
-        <View style={[styles.switchThumb, value && styles.switchThumbOn]} />
-      </Pressable>
-    </View>
+        <Animated.View
+          style={[
+            styles.switchThumb,
+            {
+              transform: [
+                { translateX: progress.interpolate({ inputRange: [0, 1], outputRange: [0, 16] }) },
+                { scale: progress.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0.94, 1] }) },
+              ],
+            },
+          ]}
+        />
+      </Animated.View>
+    </Pressable>
   );
 }
 
@@ -46,8 +90,11 @@ const styles = StyleSheet.create({
     borderTopColor: colors.dividerSoft,
     borderTopWidth: 1,
     flexDirection: 'row',
-    minHeight: 68,
-    paddingVertical: spacing.md,
+    minHeight: 58,
+    paddingVertical: spacing.sm,
+  },
+  rowPressed: {
+    opacity: 0.82,
   },
   title: {
     color: colors.text,
@@ -58,24 +105,16 @@ const styles = StyleSheet.create({
   switchThumb: {
     backgroundColor: colors.surface,
     borderRadius: 999,
-    boxShadow: '0 2px 7px rgba(23, 32, 42, 0.16)',
-    height: 22,
-    width: 22,
-  },
-  switchThumbOn: {
-    transform: [{ translateX: 18 }],
+    boxShadow: '0 1px 2px rgba(14, 21, 17, 0.10)',
+    height: 20,
+    width: 20,
   },
   switchTrack: {
-    backgroundColor: colors.dividerSoft,
     borderColor: 'transparent',
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
     padding: 2,
-    width: 46,
-  },
-  switchTrackOn: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
+    width: 42,
   },
 });

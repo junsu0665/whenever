@@ -1,9 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
-import { BarChart3, CalendarDays, Home, MessageSquareText, Shield, Soup, UserRound } from 'lucide-react-native';
+import { BarChart3, CalendarDays, Home, MessageSquareText, Shield, Soup } from 'lucide-react-native';
 
 import { colors, fonts, radii, spacing, typography } from '../theme';
 import { TabKey } from '../types';
+import { hapticSelection } from '../utils/haptics';
 
 interface BottomTabsProps {
   activeTab: TabKey;
@@ -17,7 +18,6 @@ const appTabs: Array<{ key: TabKey; label: string; Icon: typeof Home }> = [
   { key: 'board', label: '게시판', Icon: MessageSquareText },
   { key: 'meal', label: '급식', Icon: Soup },
   { key: 'grades', label: '성적', Icon: BarChart3 },
-  { key: 'profile', label: '내정보', Icon: UserRound },
 ];
 
 const adminTab: { key: TabKey; label: string; Icon: typeof Home } = { key: 'admin', label: '관리', Icon: Shield };
@@ -52,6 +52,12 @@ function TabButton({
   onPress: () => void;
 }) {
   const progress = useRef(new Animated.Value(active ? 1 : 0)).current;
+  const handlePress = () => {
+    if (!active) {
+      hapticSelection();
+    }
+    onPress();
+  };
 
   useEffect(() => {
     Animated.spring(progress, {
@@ -63,10 +69,17 @@ function TabButton({
   }, [active, progress]);
 
   return (
-    <Pressable accessibilityRole="tab" onPress={onPress} style={styles.tab}>
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+      hitSlop={6}
+      onPress={handlePress}
+      style={({ pressed }) => [styles.tab, pressed && styles.tabPressed]}
+    >
       <Animated.View
         style={[
           styles.iconWrap,
+          active && styles.iconWrapActive,
           {
             transform: [
               { scale: progress.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }) },
@@ -77,42 +90,48 @@ function TabButton({
       >
         <Icon color={active ? colors.primary : colors.subtle} size={21} strokeWidth={active ? 2.35 : 2} />
       </Animated.View>
-      <Text style={[styles.label, active && styles.labelActive]}>{label}</Text>
+      <Text adjustsFontSizeToFit minimumFontScale={0.82} numberOfLines={1} style={[styles.label, active && styles.labelActive]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
+    alignSelf: 'center',
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderCurve: 'continuous',
-    borderRadius: radii.xl,
-    borderWidth: 1,
-    boxShadow: '0 -10px 28px rgba(23, 32, 42, 0.08)',
+    borderRadius: 0,
+    borderTopWidth: 1,
+    boxShadow: 'none',
     flexDirection: 'row',
-    marginBottom: spacing.md,
-    marginHorizontal: spacing.lg,
-    paddingBottom: spacing.xs,
-    paddingHorizontal: spacing.md,
+    maxWidth: 540,
+    paddingBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
     paddingTop: spacing.sm,
+    width: '100%',
   },
   iconWrap: {
     alignItems: 'center',
-    borderRadius: 14,
-    height: 28,
+    borderRadius: radii.pill,
+    height: 36,
     justifyContent: 'center',
     width: 36,
+  },
+  iconWrapActive: {
+    backgroundColor: colors.primarySoft,
   },
   label: {
     color: colors.subtle,
     fontFamily: fonts.semibold,
     fontSize: typography.tiny,
     fontWeight: '600',
-    marginTop: 3,
+    marginTop: 2,
   },
   labelActive: {
-    color: colors.primary,
+    color: colors.primaryDark,
     fontFamily: fonts.semibold,
     fontWeight: '600',
   },
@@ -120,9 +139,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-    minHeight: 52,
+    minHeight: 56,
     outlineColor: 'transparent',
     outlineStyle: 'solid',
     outlineWidth: 0,
+  },
+  tabPressed: {
+    opacity: 0.78,
   },
 });

@@ -32,11 +32,13 @@ import {
   createRemoteProfile,
   deleteRemotePost,
   deleteRemoteAccount,
+  deleteRemoteScoreExam,
   deleteRemoteScoreSubmission,
   deleteRemoteTimetableSlot,
   incrementRemotePostView,
   loadRemoteScoreExamStats,
   loadRemoteAppData,
+  loadRemoteScoreSubjectCandidates,
   RemoteProfileInput,
   recordRemoteAnalyticsEvent,
   requestRemoteScorePrediction,
@@ -54,15 +56,17 @@ import {
   upsertRemoteScoreSubmission,
   updateRemoteTimetableSlot,
   updateRemoteTimetablePeriodTime,
+  updateRemoteTimetablePeriodTimes,
   updateRemoteTimetableSemester,
   uploadRemoteTimetableImage,
   upsertRemoteNotificationSettings,
 } from '../services/backend';
 import { providerConfig } from '../services/env';
-import { fetchMealMenu } from '../services/neis';
+import { fetchMealMenu, fetchNeisTimetableSlots } from '../services/neis';
 import { getPushToken, syncLocalNotificationSchedule } from '../services/notifications';
-import { parseTimetableImage } from '../services/ocr';
+import { buildTimetableOcrContext, parseTimetableImage } from '../services/ocr';
 import { getBackendMode, supabase } from '../services/supabase';
+import { clearTimetableWidgetData, syncTimetableWidgetData } from '../services/timetableWidget';
 import { submitStudentVerification } from '../services/verification';
 import {
   AccountMode,
@@ -85,6 +89,7 @@ import {
   ScoreExamStats,
   ScorePrediction,
   ScoreSubmission,
+  ScoreSubjectCandidateResult,
   ShareStatus,
   StudentVerificationRequest,
   TabKey,
@@ -93,7 +98,10 @@ import {
   TimetableSlot,
   VerificationStatus,
 } from '../types';
+import { hapticImpact, hapticNotification, hapticSelection, hapticSuccess, hapticWarning } from '../utils/haptics';
+import { getFriendlyErrorMessage } from '../utils/errorMessages';
 import { applyPeriodTimesToSlots, getSubjectColor, normalizePeriodTimes, sortTimetableSlots } from '../utils/timetable';
+import { getScoreReportKey } from '../utils/scoreReports';
 
 type NotificationToggleKey = 'timetable' | 'meal' | 'community';
 
@@ -126,6 +134,7 @@ interface AppStateValue {
   scorePrediction: ScorePrediction | null;
   scoreLoading: boolean;
   scoreError: string | null;
+  reportedScoreKeys: string[];
   meal: MealMenu;
   notificationSettings: NotificationSettings;
   backendMode: string;
@@ -144,15 +153,19 @@ interface AppStateValue {
   deleteTimetableSlot: (slotId: string) => void;
   setTimetableSemester: (semesterLabel: string) => void;
   setTimetablePeriodTime: (period: number, time: PeriodTime) => void;
+  setTimetablePeriodTimes: (periodTimes: PeriodTimeMap) => void;
   updateTimetableSlot: (slotId: string, patch: Partial<TimetableSlot>) => void;
   refreshMeal: (date?: string, mealType?: MealMenu['type']) => Promise<void>;
   selectScoreExam: (examId: string | null) => void;
   createScoreExam: (input: ScoreExamInput) => Promise<string | undefined>;
+  loadScoreSubjectCandidates: () => Promise<ScoreSubjectCandidateResult>;
+  deleteScoreExam: (examId: string) => Promise<void>;
   submitScore: (examId: string, score: number) => Promise<void>;
   deleteScore: (examId: string) => Promise<void>;
   refreshScoreExamStats: (examId: string) => Promise<void>;
   requestScorePrediction: (examId: string) => Promise<void>;
-  createPost: (scope: PostScope, title: string, body: string, courseId?: string) => void;
+  reportScoreAnomaly: (examId: string, score: number, rank: number, reason?: string) => void;
+  createPost: (scope: PostScope, title: string, body: string, courseId?: string, imageUris?: string[]) => void;
   createComment: (postId: string, body: string) => void;
   deletePost: (postId: string) => void;
   deleteComment: (commentId: string) => void;
@@ -168,17 +181,18 @@ interface AppStateValue {
   adminDismissReport: (reportId: string) => void;
   adminSetUserAccountStatus: (userId: string, status: AccountStatus) => void;
   adminReviewStudentVerification: (userId: string, status: Extract<VerificationStatus, 'approved' | 'rejected'>, rejectionReason?: string) => void;
-  signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, profileInput: RemoteProfileInput) => Promise<void>;
+  signIn: (loginId: string, password: string) => Promise<void>;
+  signUp: (loginId: string, password: string, profileInput: RemoteProfileInput) => Promise<void>;
   completeProfile: (profileInput: RemoteProfileInput) => Promise<void>;
   signOut: () => Promise<void>;
   deleteAccount: () => Promise<void>;
-  refreshRemoteData: () => Promise<void>;
+  refreshRemoteData: (showBlockingLoader?: boolean, silentOnFailure?: boolean) => Promise<void>;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
-const primarySlotColor = '#43A99E';
+const primarySlotColor = '#00845E';
 const reportHideThreshold = 3;
+const remoteLoadTimeoutMs = 6500;
 
 const emptyCommunityActions: CommunityActionState = {
   likedPostIds: [],
@@ -223,6 +237,48 @@ function uniqueIds(ids: string[]) {
   return [...new Set(ids.filter(Boolean))];
 }
 
+function normalizeSubjectName(subject: string) {
+  return subject.trim().replace(/\s+/g, ' ');
+}
+
+function getSubjectMergeKey(subject: string) {
+  return normalizeSubjectName(subject)
+    .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]/g, (match) => {
+      const romanNumbers: Record<string, string> = {
+        Ⅰ: '1',
+        Ⅱ: '2',
+        Ⅲ: '3',
+        Ⅳ: '4',
+        Ⅴ: '5',
+        Ⅵ: '6',
+        Ⅶ: '7',
+        Ⅷ: '8',
+        Ⅸ: '9',
+        Ⅹ: '10',
+      };
+      return romanNumbers[match] ?? match;
+    })
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
+function mergeSubjects(...groups: string[][]) {
+  const subjectsByKey = new Map<string, string>();
+  groups.flat().forEach((subject) => {
+    const normalized = normalizeSubjectName(subject);
+    if (!normalized) {
+      return;
+    }
+
+    const key = getSubjectMergeKey(normalized);
+    if (!subjectsByKey.has(key)) {
+      subjectsByKey.set(key, normalized);
+    }
+  });
+
+  return [...subjectsByKey.values()];
+}
+
 function roundScore(value: number) {
   return Math.round(value * 10) / 10;
 }
@@ -240,7 +296,7 @@ function computeScoreExamStats(examId: string, submissions: ScoreSubmission[], c
       submissionCount,
       anonymousScores: [],
       myScore: ownSubmission?.score,
-      message: '5명 이상 필요',
+      message: '5명 이상 모이면 보여요',
     };
   }
 
@@ -263,7 +319,7 @@ function computeScoreExamStats(examId: string, submissions: ScoreSubmission[], c
   };
 }
 
-const scoreSubmissionRequiredMessage = '점수를 제출해야 성적을 볼 수 있습니다.';
+const scoreSubmissionRequiredMessage = '점수를 제출하면 성적을 볼 수 있어요.';
 
 function canViewScoreResults(exam: ScoreExam | undefined, isAdminMode: boolean) {
   return Boolean(exam && (isAdminMode || exam.myScore !== undefined));
@@ -276,8 +332,8 @@ function estimateLocalScorePrediction(exam: ScoreExam | undefined, stats: ScoreE
       examId: exam?.id ?? stats?.examId ?? 'unknown',
       status: 'insufficient_sample',
       sampleCount,
-      rationale: '15명 이상 필요',
-      biasWarning: '참고용입니다.',
+      rationale: '15명 이상 모이면 보여요.',
+      biasWarning: '참고용이에요.',
     };
   }
 
@@ -292,8 +348,8 @@ function estimateLocalScorePrediction(exam: ScoreExam | undefined, stats: ScoreE
       Math.min(exam.maxScore, stats.topTenCutScore + spread),
     ],
     confidence: Math.min(0.72, 0.4 + sampleCount / 100),
-    rationale: '현재 점수로 계산했습니다.',
-    biasWarning: '참고용입니다.',
+    rationale: '현재 제출된 점수로 계산했어요.',
+    biasWarning: '참고용이에요.',
   };
 }
 
@@ -328,15 +384,23 @@ function addId(ids: string[], id: string) {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error) {
-    return error.message;
-  }
+  return getFriendlyErrorMessage(error, fallback);
+}
 
-  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
-    return error.message;
-  }
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-  return fallback;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
 }
 
 const demoUserDefaults = new Map(demoUsers.map((user) => [user.id, user]));
@@ -439,6 +503,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [scorePrediction, setScorePrediction] = useState<ScorePrediction | null>(null);
   const [scoreLoading, setScoreLoading] = useState(false);
   const [scoreError, setScoreError] = useState<string | null>(null);
+  const [reportedScoreKeys, setReportedScoreKeys] = useState<string[]>([]);
   const [meal, setMeal] = useState<MealMenu>(demoMeal);
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(demoNotificationSettings);
   const [selectedPostScope, setSelectedPostScope] = useState<PostScope>('school');
@@ -483,20 +548,35 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const refreshRemoteData = useCallback(async () => {
+  const refreshRemoteData = useCallback(async (showBlockingLoader = true, silentOnFailure = false) => {
     if (!remoteEnabled) {
       return;
     }
 
-    setAuthLoading(true);
+    if (showBlockingLoader) {
+      setAuthLoading(true);
+    }
     try {
-      const data = await loadRemoteAppData();
+      const data = await withTimeout(
+        loadRemoteAppData(),
+        remoteLoadTimeoutMs,
+        '서버 연결이 지연되고 있어요. 네트워크를 확인한 뒤 다시 시도해 주세요.',
+      );
       applyRemoteData(data);
       setAuthError(null);
     } catch (error) {
-      setAuthError(getErrorMessage(error, '원격 데이터를 불러오지 못했습니다.'));
+      if (silentOnFailure) {
+        setAuthError(null);
+        setAuthNotice(null);
+        setIsAuthenticated(false);
+        setNeedsProfile(false);
+      } else {
+        setAuthError(getErrorMessage(error, '데이터를 불러오지 못했어요.'));
+      }
     } finally {
-      setAuthLoading(false);
+      if (showBlockingLoader) {
+        setAuthLoading(false);
+      }
     }
   }, [applyRemoteData, remoteEnabled]);
 
@@ -510,12 +590,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         await mutation();
         setAuthError(null);
         if (refresh) {
-          await refreshRemoteData();
+          await refreshRemoteData(false);
         }
       } catch (error) {
-        setAuthError(getErrorMessage(error, '요청 처리에 실패했습니다.'));
+        setAuthError(getErrorMessage(error, '요청을 처리하지 못했어요.'));
         if (refresh) {
-          await refreshRemoteData();
+          await refreshRemoteData(false);
         }
       }
     },
@@ -529,7 +609,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
 
     if (remoteEnabled) {
-      void refreshRemoteData();
+      void refreshRemoteData(true, true);
       return;
     }
   }, [launchBlocked, refreshRemoteData, remoteEnabled]);
@@ -549,8 +629,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    void syncLocalNotificationSchedule(notificationSettings, timetable, meal, false);
+    void syncLocalNotificationSchedule(notificationSettings, timetable, meal, false).catch(() => undefined);
   }, [isAuthenticated, launchBlocked, meal, notificationSettings, profile.verificationStatus, timetable]);
+
+  useEffect(() => {
+    if (launchBlocked) {
+      return;
+    }
+
+    if (!isAuthenticated || needsProfile) {
+      void clearTimetableWidgetData().catch(() => undefined);
+      return;
+    }
+
+    void syncTimetableWidgetData(profile, timetable).catch(() => undefined);
+  }, [isAuthenticated, launchBlocked, needsProfile, profile, timetable]);
 
   useEffect(() => {
     if (selectedScoreExamId && scoreExams.some((exam) => exam.id === selectedScoreExamId)) {
@@ -595,10 +688,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   );
   const changeActiveTab = useCallback(
     (tab: TabKey) => {
+      if (tab === activeTab) {
+        return;
+      }
+
+      hapticSelection();
       setActiveTab(tab);
       void runRemoteMutation(() => recordRemoteAnalyticsEvent('tab_open', { tab }), false);
     },
-    [runRemoteMutation],
+    [activeTab, runRemoteMutation],
   );
 
   const value = useMemo<AppStateValue>(
@@ -631,6 +729,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       scorePrediction,
       scoreLoading,
       scoreError,
+      reportedScoreKeys,
       meal,
       notificationSettings,
       backendMode: getBackendMode(),
@@ -663,7 +762,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             setAuthError(null);
           } catch (error) {
             setViewedPostIds((current) => current.filter((id) => id !== postId));
-            setAuthError(getErrorMessage(error, '조회수를 저장하지 못했습니다.'));
+            setAuthError(getErrorMessage(error, '조회수를 저장하지 못했어요.'));
           }
         })();
       },
@@ -717,11 +816,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           ...current.filter((verification) => verification.userId !== profile.id || verification.status !== 'pending'),
         ]);
         if (remoteEnabled) {
-          await refreshRemoteData();
+          await refreshRemoteData(false);
         }
       },
       importTimetableFromImage: async (image) => {
-        const result = await parseTimetableImage(image);
+        const result = await parseTimetableImage(image, buildTimetableOcrContext(timetable));
         let sourceStoragePath: string | undefined;
 
         if (remoteEnabled) {
@@ -729,7 +828,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             sourceStoragePath = await uploadRemoteTimetableImage(image);
           } catch (error) {
             void recordRemoteAnalyticsEvent('timetable_image_upload_failed', {
-              message: getErrorMessage(error, '시간표 원본 이미지 업로드에 실패했습니다.'),
+              message: getErrorMessage(error, '시간표 원본 이미지 업로드에 실패했어요.'),
             }).catch(() => undefined);
           }
         }
@@ -741,6 +840,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           slots: sortTimetableSlots(nextSlots),
           lastImportedAt: new Date().toISOString(),
         }));
+        hapticSuccess();
         if (remoteEnabled) {
           await saveRemoteTimetable(profile, nextSlots, sourceStoragePath, timetable.periodTimes);
           await refreshRemoteData();
@@ -760,6 +860,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           slots: sortTimetableSlots([...current.slots.filter((currentSlot) => currentSlot.id !== slot.id), slot]),
           lastImportedAt: new Date().toISOString(),
         }));
+        hapticSuccess();
         void runRemoteMutation(() => createRemoteTimetableSlot(profile, slot));
       },
       deleteTimetableSlot: (slotId) => {
@@ -769,11 +870,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           slots: current.slots.filter((slot) => slot.id !== slotId),
           lastImportedAt: new Date().toISOString(),
         }));
+        hapticWarning();
         void runRemoteMutation(() => deleteRemoteTimetableSlot(slotId));
       },
       setTimetableSemester: (semesterLabel) => {
         const nextLabel = semesterLabel.trim() || '이번 학기';
         setTimetable((current) => ({ ...current, semesterLabel: nextLabel, source: 'manual' }));
+        hapticSelection();
         void runRemoteMutation(() => updateRemoteTimetableSemester(profile, nextLabel), false);
       },
       setTimetablePeriodTime: (period, time) => {
@@ -790,7 +893,23 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           };
         });
         const nextPeriodTimes = normalizePeriodTimes({ ...timetable.periodTimes, [period]: time });
+        hapticSelection();
         void runRemoteMutation(() => updateRemoteTimetablePeriodTime(profile, nextPeriodTimes, period, time), false);
+      },
+      setTimetablePeriodTimes: (periodTimes) => {
+        const nextPeriodTimes = normalizePeriodTimes(periodTimes, timetable.slots);
+        setTimetable((current) => {
+          const normalizedPeriodTimes = normalizePeriodTimes(periodTimes, current.slots);
+          return {
+            ...current,
+            source: 'manual',
+            periodTimes: normalizedPeriodTimes,
+            slots: applyPeriodTimesToSlots(current.slots, normalizedPeriodTimes),
+            lastImportedAt: new Date().toISOString(),
+          };
+        });
+        hapticSelection();
+        void runRemoteMutation(() => updateRemoteTimetablePeriodTimes(profile, nextPeriodTimes), false);
       },
       refreshMeal: async (date, mealType = meal.type) => {
         const school = schools.find((candidate) => candidate.id === profile.schoolId) ?? demoSchool;
@@ -817,7 +936,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         try {
           if (remoteEnabled) {
             const created = await createRemoteScoreExam(profile, input);
-            await refreshRemoteData();
+            await refreshRemoteData(false);
             setSelectedScoreExamId(created.id);
             setScoreExamStats(null);
             setScorePrediction(null);
@@ -854,8 +973,90 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           setScorePrediction(null);
           return created.id;
         } catch (error) {
-          setScoreError(getErrorMessage(error, '시험을 만들지 못했습니다.'));
+          setScoreError(getErrorMessage(error, '시험을 만들지 못했어요.'));
           return undefined;
+        } finally {
+          setScoreLoading(false);
+        }
+      },
+      loadScoreSubjectCandidates: async () => {
+        setScoreLoading(true);
+        setScoreError(null);
+        try {
+          const localTimetableSubjects = mergeSubjects(
+            timetable.slots.map((slot) => slot.subject),
+            overlap.sharedSubjects,
+          );
+          let remoteTimetableSubjects: string[] = [];
+          if (remoteEnabled) {
+            try {
+              const remoteCandidates = await loadRemoteScoreSubjectCandidates();
+              remoteTimetableSubjects = remoteCandidates.subjects;
+            } catch (error) {
+              void recordRemoteAnalyticsEvent('score_subject_candidates_failed', {
+                message: getErrorMessage(error, '학생 시간표 과목을 불러오지 못했어요.'),
+              }).catch(() => undefined);
+            }
+          }
+
+          const school = schools.find((candidate) => candidate.id === profile.schoolId) ?? demoSchool;
+          let neisSubjects: string[] = [];
+          try {
+            const neisSlots = await fetchNeisTimetableSlots({
+              className: profile.className,
+              grade: profile.grade,
+              periodTimes: timetable.periodTimes,
+              school,
+            });
+            neisSubjects = mergeSubjects(neisSlots.map((slot) => slot.subject));
+          } catch (error) {
+            void recordRemoteAnalyticsEvent('score_neis_subjects_failed', {
+              message: getErrorMessage(error, 'NEIS 시간표 과목을 불러오지 못했어요.'),
+            }).catch(() => undefined);
+          }
+
+          const timetableSubjects = mergeSubjects(localTimetableSubjects, remoteTimetableSubjects);
+          const subjects = mergeSubjects(timetableSubjects, neisSubjects);
+          if (!subjects.length) {
+            setScoreError('학생 시간표나 NEIS에서 과목을 찾지 못했어요.');
+          }
+
+          return {
+            subjects,
+            timetableSubjectCount: timetableSubjects.length,
+            neisSubjectCount: neisSubjects.length,
+          };
+        } catch (error) {
+          setScoreError(getErrorMessage(error, '시험 과목 후보를 불러오지 못했어요.'));
+          return { subjects: [], timetableSubjectCount: 0, neisSubjectCount: 0 };
+        } finally {
+          setScoreLoading(false);
+        }
+      },
+      deleteScoreExam: async (examId) => {
+        if (!isAdminMode) {
+          return;
+        }
+
+        setScoreLoading(true);
+        setScoreError(null);
+        try {
+          const nextSelectedId = scoreExams.find((exam) => exam.id !== examId)?.id ?? null;
+
+          if (remoteEnabled) {
+            await deleteRemoteScoreExam(examId);
+            await refreshRemoteData(false);
+          } else {
+            setScoreExams((current) => current.filter((exam) => exam.id !== examId));
+            setScoreSubmissions((current) => current.filter((submission) => submission.examId !== examId));
+          }
+
+          setSelectedScoreExamId((current) => (current === examId ? nextSelectedId : current));
+          setScoreExamStats(null);
+          setScorePrediction(null);
+          hapticWarning();
+        } catch (error) {
+          setScoreError(getErrorMessage(error, '시험을 삭제하지 못했어요.'));
         } finally {
           setScoreLoading(false);
         }
@@ -870,7 +1071,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             } else {
               await upsertRemoteScoreSubmission(examId, score);
             }
-            await refreshRemoteData();
+            await refreshRemoteData(false);
             try {
               const stats = await loadRemoteScoreExamStats(examId);
               setScoreExamStats(stats);
@@ -927,7 +1128,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           }
           setScorePrediction(null);
         } catch (error) {
-          setScoreError(getErrorMessage(error, '점수를 저장하지 못했습니다.'));
+          setScoreError(getErrorMessage(error, '점수를 저장하지 못했어요.'));
         } finally {
           setScoreLoading(false);
         }
@@ -938,7 +1139,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         try {
           if (remoteEnabled) {
             await deleteRemoteScoreSubmission(examId);
-            await refreshRemoteData();
+            await refreshRemoteData(false);
             if (isAdminMode) {
               const stats = await loadRemoteScoreExamStats(examId);
               setScoreExamStats(stats);
@@ -955,7 +1156,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           );
           setScorePrediction(null);
         } catch (error) {
-          setScoreError(getErrorMessage(error, '점수를 삭제하지 못했습니다.'));
+          setScoreError(getErrorMessage(error, '점수를 삭제하지 못했어요.'));
         } finally {
           setScoreLoading(false);
         }
@@ -977,7 +1178,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             : computeScoreExamStats(examId, scoreSubmissions, profile.id);
           setScoreExamStats(stats);
         } catch (error) {
-          setScoreError(getErrorMessage(error, '성적 현황을 불러오지 못했습니다.'));
+          setScoreError(getErrorMessage(error, '성적 현황을 불러오지 못했어요.'));
         } finally {
           setScoreLoading(false);
         }
@@ -1012,14 +1213,32 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
           setScorePrediction(estimateLocalScorePrediction(exam, stats));
         } catch (error) {
-          setScoreError(getErrorMessage(error, 'AI 예측을 불러오지 못했습니다.'));
+          setScoreError(getErrorMessage(error, '분포 참고값을 불러오지 못했어요.'));
           const exam = scoreExams.find((candidate) => candidate.id === examId);
           setScorePrediction(estimateLocalScorePrediction(exam, scoreExamStats));
         } finally {
           setScoreLoading(false);
         }
       },
-      createPost: (scope, title, body, courseId) => {
+      reportScoreAnomaly: (examId, score, rank, reason = '이상 점수 신고') => {
+        if (profile.verificationStatus !== 'approved') {
+          return;
+        }
+
+        const reportKey = getScoreReportKey(examId, score, rank);
+        setReportedScoreKeys((current) => (current.includes(reportKey) ? current : [...current, reportKey]));
+        void runRemoteMutation(
+          () =>
+            recordRemoteAnalyticsEvent('score_anomaly_report', {
+              examId,
+              rank,
+              reason,
+              score,
+            }),
+          false,
+        );
+      },
+      createPost: (scope, title, body, courseId, imageUris = []) => {
         if (profile.verificationStatus !== 'approved' || (scope === 'course' && !courseId)) {
           return;
         }
@@ -1031,6 +1250,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           courseId: scope === 'course' ? courseId : undefined,
           title,
           body,
+          imageUris: imageUris.filter(Boolean),
           authorId: profile.id,
           anonymousLabel: '익명',
           createdAt: new Date().toISOString(),
@@ -1043,7 +1263,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         };
         setPosts((current) => [post, ...current]);
         setSelectedPostId(post.id);
-        void runRemoteMutation(() => createRemotePost(profile, scope, title, body, scope === 'course' ? courseId : undefined));
+        hapticNotification('success');
+        void runRemoteMutation(() => createRemotePost(profile, scope, title, body, scope === 'course' ? courseId : undefined, imageUris));
       },
       createComment: (postId, body) => {
         if (profile.verificationStatus !== 'approved') {
@@ -1072,6 +1293,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setPosts((current) =>
           current.map((post) => (post.id === postId ? { ...post, commentCount: post.commentCount + 1 } : post)),
         );
+        hapticImpact('light');
         void runRemoteMutation(() => createRemoteComment(profile, postId, body));
       },
       deletePost: (postId) => {
@@ -1096,6 +1318,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (selectedPostId === postId) {
           setSelectedPostId(null);
         }
+        hapticWarning();
         void runRemoteMutation(() => deleteRemotePost(postId));
       },
       deleteComment: (commentId) => {
@@ -1118,6 +1341,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           likedCommentIds: current.likedCommentIds.filter((id) => id !== commentId),
           reportedCommentIds: current.reportedCommentIds.filter((id) => id !== commentId),
         }));
+        hapticWarning();
         void runRemoteMutation(() => deleteRemoteComment(commentId));
       },
       likePost: (postId) => {
@@ -1132,6 +1356,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           ),
         );
         setCommunityActions((current) => ({ ...current, likedPostIds: toggleId(current.likedPostIds, postId) }));
+        hapticImpact(liked ? 'light' : 'medium');
         void runRemoteMutation(() => setRemotePostLike(postId, !liked), false);
       },
       likeComment: (commentId) => {
@@ -1148,6 +1373,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           ),
         );
         setCommunityActions((current) => ({ ...current, likedCommentIds: toggleId(current.likedCommentIds, commentId) }));
+        hapticImpact(liked ? 'light' : 'medium');
         void runRemoteMutation(() => setRemoteCommentLike(commentId, !liked), false);
       },
       bookmarkPost: (postId) => {
@@ -1157,6 +1383,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
         const bookmarked = communityActions.bookmarkedPostIds.includes(postId);
         setCommunityActions((current) => ({ ...current, bookmarkedPostIds: toggleId(current.bookmarkedPostIds, postId) }));
+        hapticSelection();
         void runRemoteMutation(() => setRemotePostBookmark(postId, !bookmarked), false);
       },
       reportPost: (postId, reason = '부적절한 내용') => {
@@ -1191,6 +1418,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             return { ...post, reportCount, hidden: reportCount >= reportHideThreshold };
           }),
         );
+        hapticWarning();
         void runRemoteMutation(() => reportRemotePost(profile, postId, reason), false);
       },
       reportComment: (commentId, reason = '부적절한 내용') => {
@@ -1234,6 +1462,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             ),
           );
         }
+        hapticWarning();
         void runRemoteMutation(() => reportRemoteComment(profile, commentId, reason), false);
       },
       adminSetPostHidden: (postId, hidden) => {
@@ -1347,7 +1576,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
                   status,
                   reviewedAt,
                   reviewerId: profile.id,
-                  rejectionReason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없습니다.' : undefined,
+                  rejectionReason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없어요.' : undefined,
                 }
               : verification,
           ),
@@ -1358,13 +1587,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (userId === profile.id) {
           setProfile((current) => ({
             ...current,
-            studentVerificationRejectionReason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없습니다.' : undefined,
+            studentVerificationRejectionReason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없어요.' : undefined,
             verificationStatus: status,
           }));
         }
         void runRemoteMutation(() => adminReviewRemoteStudentVerification(userId, status, rejectionReason));
       },
-      signIn: async (email, password) => {
+      signIn: async (loginId, password) => {
         setAuthLoading(true);
         setAuthError(null);
         setAuthNotice(null);
@@ -1376,15 +1605,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             return;
           }
 
-          await signInRemote(email, password);
+          await signInRemote(loginId, password);
           await refreshRemoteData();
         } catch (error) {
-          setAuthError(getErrorMessage(error, '로그인에 실패했습니다.'));
+          setAuthError(getErrorMessage(error, '로그인에 실패했어요.'));
         } finally {
           setAuthLoading(false);
         }
       },
-      signUp: async (email, password, profileInput) => {
+      signUp: async (loginId, password, profileInput) => {
         setAuthLoading(true);
         setAuthError(null);
         setAuthNotice(null);
@@ -1415,14 +1644,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             return;
           }
 
-          const hasSession = await signUpRemote(email, password, profileInput);
+          const hasSession = await signUpRemote(loginId, password, profileInput);
           if (hasSession) {
             await refreshRemoteData();
           } else {
-            setAuthNotice('확인 메일을 보냈습니다. 메일 인증 후 로그인해 주세요.');
+            setAuthNotice('가입 요청이 접수됐어요. 잠시 후 만든 아이디로 로그인해 주세요.');
           }
         } catch (error) {
-          setAuthError(getErrorMessage(error, '회원가입에 실패했습니다.'));
+          setAuthError(getErrorMessage(error, '회원가입에 실패했어요.'));
         } finally {
           setAuthLoading(false);
         }
@@ -1452,7 +1681,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           await createRemoteProfile(profileInput);
           await refreshRemoteData();
         } catch (error) {
-          setAuthError(getErrorMessage(error, '프로필 생성에 실패했습니다.'));
+          setAuthError(getErrorMessage(error, '프로필 생성에 실패했어요.'));
         } finally {
           setAuthLoading(false);
         }
@@ -1467,7 +1696,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           }
           clearSignedOutState();
         } catch (error) {
-          setAuthError(getErrorMessage(error, '로그아웃에 실패했습니다.'));
+          setAuthError(getErrorMessage(error, '로그아웃에 실패했어요.'));
         } finally {
           setAuthLoading(false);
         }
@@ -1482,7 +1711,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           }
           clearSignedOutState();
         } catch (error) {
-          setAuthError(getErrorMessage(error, '계정 삭제에 실패했습니다.'));
+          setAuthError(getErrorMessage(error, '계정 삭제에 실패했어요.'));
         } finally {
           setAuthLoading(false);
         }
@@ -1513,6 +1742,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       refreshRemoteData,
       remoteEnabled,
       reports,
+      reportedScoreKeys,
       runRemoteMutation,
       schools,
       scoreError,

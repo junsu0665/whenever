@@ -17,6 +17,7 @@ import {
   ScoreExamInput,
   ScoreExamStats,
   ScorePrediction,
+  ScoreSubjectCandidateResult,
   ShareStatus,
   StudentVerificationRequest,
   Timetable,
@@ -26,6 +27,7 @@ import {
   VerificationStatus,
 } from '../types';
 import { getCourseId, getSubjectColor, normalizePeriodTimes, sortTimetableSlots, timetableDays } from '../utils/timetable';
+import { normalizeKoreanMobileNumber } from '../utils/profile';
 import { providerConfig } from './env';
 import { fetchMealMenu } from './neis';
 import { clearSupabaseAuthStorage, supabase } from './supabase';
@@ -102,6 +104,7 @@ interface PostRow {
   scope: PostScope;
   title: string;
   body: string;
+  image_uris?: string[] | null;
   like_count: number;
   comment_count: number;
   view_count: number;
@@ -168,15 +171,14 @@ interface ScoreSubmissionRow {
   updated_at?: string | null;
 }
 
-interface FriendshipRow {
-  id: string;
-  requester_id: string;
-  addressee_id: string;
-  status: 'requested' | 'accepted' | 'blocked';
+interface ScoreSubjectCandidateRow {
+  subject?: string | null;
+  occurrence_count?: number | string | null;
 }
 
 export interface RemoteProfileInput {
   name: string;
+  phoneNumber: string;
   schoolId: string;
   school?: School;
   grade: number;
@@ -201,6 +203,8 @@ const defaultNotificationSettings: NotificationSettings = {
   lunchReminderTime: '11:20',
   dinnerReminderTime: '16:30',
 };
+const loginIdPattern = /^[a-z0-9](?:[a-z0-9._-]{2,18}[a-z0-9])$/;
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const emptyCommunityActions: CommunityActionState = {
   likedPostIds: [],
@@ -215,10 +219,77 @@ const weekdayByNumber: TimetableDay[] = ['월', '화', '수', '목', '금'];
 
 function assertSupabase() {
   if (!supabase) {
-    throw new Error('Supabase 설정이 없습니다.');
+    throw new Error('서비스 연결을 확인하지 못했어요. 잠시 후 다시 시도해 주세요.');
   }
 
   return supabase;
+}
+
+function normalizeLoginId(loginId: string) {
+  return loginId.trim().toLowerCase();
+}
+
+function assertLoginId(loginId: string) {
+  const normalized = normalizeLoginId(loginId);
+  if (!loginIdPattern.test(normalized) || normalized.includes('..')) {
+    throw new Error('아이디는 영문 소문자, 숫자, 점, 밑줄, 하이픈을 조합해 4-20자로 입력해 주세요.');
+  }
+
+  return normalized;
+}
+
+function authEmailFromLoginId(loginId: string) {
+  if (!providerConfig.authEmailDomain) {
+    throw new Error('이메일 주소를 입력해 주세요.');
+  }
+
+  return `${assertLoginId(loginId)}@${providerConfig.authEmailDomain}`;
+}
+
+function assertEmail(email: string) {
+  const normalized = email.trim().toLowerCase();
+  if (!emailPattern.test(normalized)) {
+    throw new Error('이메일 형식을 확인해 주세요.');
+  }
+
+  return normalized;
+}
+
+function authEmailFromIdentifier(identifier: string) {
+  const normalized = normalizeLoginId(identifier);
+  return normalized.includes('@') ? assertEmail(normalized) : authEmailFromLoginId(normalized);
+}
+
+function getPostgrestCode(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return '';
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : '';
+}
+
+function getPostgrestMessage(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('message' in error)) {
+    return '';
+  }
+
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' ? message : '';
+}
+
+function toPhoneClaimError(error: unknown) {
+  const message = getPostgrestMessage(error);
+
+  if (getPostgrestCode(error) === '23505' || /duplicate key|account_phone_numbers_phone_number/i.test(message)) {
+    return new Error('이미 이 휴대폰 번호로 만든 계정이 있어요. 로그인하거나 계정 찾기를 이용해 주세요.');
+  }
+
+  if (/account_phone_numbers|is_phone_number_available/i.test(message)) {
+    return new Error('휴대폰 번호 확인을 완료하지 못했어요. 잠시 후 다시 시도해 주세요.');
+  }
+
+  return error;
 }
 
 function toTime(value: string) {
@@ -332,6 +403,7 @@ function mapPost(row: PostRow): Post {
     courseId: row.course_id ?? undefined,
     title: row.title,
     body: row.body,
+    imageUris: row.image_uris?.filter(Boolean) ?? [],
     authorId: row.author_id,
     anonymousLabel: '익명',
     createdAt: row.created_at,
@@ -465,36 +537,44 @@ function getSharedSlotIds(ownerTimetable: Timetable, friendTimetable?: Timetable
     .map((slot) => slot.id);
 }
 
-function mapFriends(
-  rows: FriendshipRow[],
-  currentUserId: string,
-  users: Profile[],
-  ownerTimetable: Timetable,
-  friendTimetables: TimetableRow[],
-): Friend[] {
-  return rows
+function mapSharedTimetablePeople(rows: TimetableRow[], users: Profile[], ownerTimetable: Timetable): Friend[] {
+  const latestTimetableByUser = new Map<string, TimetableRow>();
+  rows.forEach((row) => {
+    if (!latestTimetableByUser.has(row.user_id)) {
+      latestTimetableByUser.set(row.user_id, row);
+    }
+  });
+
+  return [...latestTimetableByUser.values()]
     .map((row) => {
-      const profileId = row.requester_id === currentUserId ? row.addressee_id : row.requester_id;
-      const user = users.find((candidate) => candidate.id === profileId);
-      if (!user) {
+      const user = users.find((candidate) => candidate.id === row.user_id);
+      if (
+        !user ||
+        user.verificationStatus !== 'approved' ||
+        user.accountStatus === 'suspended' ||
+        user.timetableShareStatus !== 'enabled'
+      ) {
         return null;
       }
 
-      const friend: Friend = {
-        id: row.id,
-        profileId,
-        requesterId: row.requester_id,
-        addresseeId: row.addressee_id,
+      const sharedSlotIds = getSharedSlotIds(ownerTimetable, row);
+      if (!sharedSlotIds.length) {
+        return null;
+      }
+
+      const sharedPerson: Friend = {
+        id: `shared-${row.user_id}`,
+        profileId: row.user_id,
         name: user.name,
         grade: user.grade,
         className: user.className,
-        status: row.status,
-        requestedByCurrentUser: row.requester_id === currentUserId,
-        avatarColor: row.status === 'accepted' ? '#E7F7F4' : '#F0F7F4',
-        sharedSlotIds: getSharedSlotIds(ownerTimetable, friendTimetables.find((timetable) => timetable.user_id === profileId)),
+        status: 'accepted',
+        requestedByCurrentUser: false,
+        avatarColor: '#E9F8F0',
+        sharedSlotIds,
       };
 
-      return friend;
+      return sharedPerson;
     })
     .filter((friend): friend is Friend => friend !== null);
 }
@@ -542,10 +622,20 @@ export async function createRemoteProfile(input: RemoteProfileInput) {
   } = await client.auth.getUser();
 
   if (userError || !user) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const schoolId = await ensureRemoteSchoolId(input);
+  const phoneNumber = normalizeKoreanMobileNumber(input.phoneNumber);
+  const { error: phoneError } = await client.from('account_phone_numbers').insert({
+    user_id: user.id,
+    phone_number: phoneNumber,
+  });
+
+  if (phoneError) {
+    throw toPhoneClaimError(phoneError);
+  }
+
   const { error } = await client.from('profiles').insert({
     id: user.id,
     school_id: schoolId,
@@ -563,7 +653,24 @@ export async function createRemoteProfile(input: RemoteProfileInput) {
   });
 
   if (error) {
+    await client.from('account_phone_numbers').delete().eq('user_id', user.id);
     throw error;
+  }
+}
+
+export async function assertRemotePhoneNumberAvailable(phoneNumber: string) {
+  const client = assertSupabase();
+  const normalizedPhoneNumber = normalizeKoreanMobileNumber(phoneNumber);
+  const { data, error } = await client.rpc('is_phone_number_available', {
+    p_phone_number: normalizedPhoneNumber,
+  });
+
+  if (error) {
+    throw toPhoneClaimError(error);
+  }
+
+  if (data === false) {
+    throw new Error('이미 이 휴대폰 번호로 만든 계정이 있어요. 로그인하거나 계정 찾기를 이용해 주세요.');
   }
 }
 
@@ -619,6 +726,7 @@ function profileInputFromUserMetadata(metadata: Record<string, unknown> | undefi
   }
 
   const name = getMetadataString(metadata, 'display_name') || getMetadataString(metadata, 'name');
+  const phoneNumber = getMetadataString(metadata, 'phone_number');
   const className = getMetadataString(metadata, 'class_name');
   const grade = getMetadataNumber(metadata, 'grade');
   const schoolId = getMetadataString(metadata, 'school_id');
@@ -639,12 +747,13 @@ function profileInputFromUserMetadata(metadata: Record<string, unknown> | undefi
         }
       : undefined);
 
-  if (!name || !className || !grade || grade < 1 || grade > 3 || (!school && !schoolId)) {
+  if (!name || !phoneNumber || !className || !grade || grade < 1 || grade > 3 || (!school && !schoolId)) {
     return null;
   }
 
   return {
     name,
+    phoneNumber,
     schoolId: school?.id ?? schoolId,
     school,
     grade,
@@ -758,7 +867,7 @@ export async function loadRemoteAppData(): Promise<RemoteAppData> {
     postLikesResult,
     commentLikesResult,
     postBookmarksResult,
-    friendshipsResult,
+    sharedTimetablesResult,
     scoreExamsResult,
   ] = await Promise.all([
       client.from('profiles').select('*, schools(*)').order('display_name'),
@@ -771,7 +880,15 @@ export async function loadRemoteAppData(): Promise<RemoteAppData> {
       client.from('post_likes').select('post_id').eq('user_id', user.id),
       client.from('comment_likes').select('comment_id').eq('user_id', user.id),
       client.from('post_bookmarks').select('post_id').eq('user_id', user.id),
-      client.from('friendships').select('*').or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`).order('updated_at', { ascending: false }),
+      profile.friendTimetableViewStatus === 'enabled'
+        ? client
+            .from('timetables')
+            .select('*, timetable_slots(*)')
+            .eq('school_id', profile.schoolId)
+            .neq('user_id', user.id)
+            .order('updated_at', { ascending: false })
+            .limit(200)
+        : { data: [], error: null },
       client.from('score_exams').select('*').eq('school_id', profile.schoolId).eq('grade', profile.grade).order('updated_at', { ascending: false }).limit(100),
     ]);
 
@@ -786,7 +903,7 @@ export async function loadRemoteAppData(): Promise<RemoteAppData> {
     postLikesResult.error,
     commentLikesResult.error,
     postBookmarksResult.error,
-    friendshipsResult.error,
+    sharedTimetablesResult.error,
     scoreExamsResult.error,
   ].find(Boolean);
 
@@ -834,23 +951,7 @@ export async function loadRemoteAppData(): Promise<RemoteAppData> {
     scoreSubmissions.map((submission) => [submission.exam_id, submission]),
   );
   const scoreExams = scoreExamRows.map((row) => mapScoreExam(row, ownScoreSubmissions.get(row.id)));
-  const friendshipRows = (friendshipsResult.data ?? []) as FriendshipRow[];
-  const friendUserIds = friendshipRows
-    .filter((row) => row.status === 'accepted')
-    .map((row) => (row.requester_id === user.id ? row.addressee_id : row.requester_id));
-  const friendTimetablesResult = friendUserIds.length
-    ? await client.from('timetables').select('*, timetable_slots(*)').in('user_id', friendUserIds)
-    : { data: [], error: null };
-  if (friendTimetablesResult.error) {
-    throw friendTimetablesResult.error;
-  }
-  const friends = mapFriends(
-    friendshipRows,
-    user.id,
-    users,
-    timetable,
-    (friendTimetablesResult.data ?? []) as TimetableRow[],
-  );
+  const friends = mapSharedTimetablePeople((sharedTimetablesResult.data ?? []) as TimetableRow[], users, timetable);
 
   return {
     authenticated: true,
@@ -878,23 +979,30 @@ export async function loadRemoteAppData(): Promise<RemoteAppData> {
   };
 }
 
-export async function signInRemote(email: string, password: string) {
+export async function signInRemote(loginId: string, password: string) {
   const client = assertSupabase();
-  const { error } = await client.auth.signInWithPassword({ email: email.trim(), password });
+  const { error } = await client.auth.signInWithPassword({ email: authEmailFromIdentifier(loginId), password });
   if (error) {
     throw error;
   }
 }
 
-export async function signUpRemote(email: string, password: string, profile: RemoteProfileInput) {
+export async function signUpRemote(loginId: string, password: string, profile: RemoteProfileInput) {
   const client = assertSupabase();
   const school = profile.school;
+  const authEmail = authEmailFromIdentifier(loginId);
+  const normalizedLoginId = authEmail.includes('@') ? authEmail : assertLoginId(loginId);
+  const phoneNumber = normalizeKoreanMobileNumber(profile.phoneNumber);
+  await assertRemotePhoneNumberAvailable(phoneNumber);
+
   const { data, error } = await client.auth.signUp({
-    email: email.trim(),
+    email: authEmail,
     password,
     options: {
       data: {
+        login_id: normalizedLoginId,
         display_name: profile.name.trim(),
+        phone_number: phoneNumber,
         school_id: profile.schoolId,
         school_name: school?.name,
         school_region: school?.region,
@@ -928,14 +1036,14 @@ export async function signOutRemote() {
 export async function deleteRemoteAccount() {
   const client = assertSupabase();
   if (!providerConfig.accountDeleteEndpoint) {
-    throw new Error('계정 삭제 endpoint가 설정되어 있지 않습니다.');
+    throw new Error('계정 삭제를 완료하지 못했어요. 고객지원에 문의해 주세요.');
   }
 
   const {
     data: { session },
   } = await client.auth.getSession();
   if (!session?.access_token) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const response = await fetch(providerConfig.accountDeleteEndpoint, {
@@ -948,7 +1056,7 @@ export async function deleteRemoteAccount() {
 
   const payload = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
-    throw new Error(payload.error ?? '계정 삭제에 실패했습니다.');
+    throw new Error(payload.error ?? '계정 삭제에 실패했어요.');
   }
 
   const { error: signOutError } = await client.auth.signOut({ scope: 'local' });
@@ -961,7 +1069,7 @@ export async function setRemoteShareStatus(key: 'timetableShareStatus' | 'friend
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const column = key === 'timetableShareStatus' ? 'timetable_share_status' : 'friend_timetable_view_status';
@@ -979,7 +1087,7 @@ export async function upsertRemoteNotificationSettings(settings: NotificationSet
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const updatedAt = new Date().toISOString();
@@ -1023,16 +1131,34 @@ export async function upsertRemoteNotificationSettings(settings: NotificationSet
   }
 }
 
-export async function createRemotePost(profile: Profile, scope: PostScope, title: string, body: string, courseId?: string) {
+export async function createRemotePost(
+  profile: Profile,
+  scope: PostScope,
+  title: string,
+  body: string,
+  courseId?: string,
+  imageUris: string[] = [],
+) {
   const client = assertSupabase();
-  const { error } = await client.from('posts').insert({
+  const payload = {
     school_id: profile.schoolId,
     course_id: scope === 'course' ? courseId : null,
     author_id: profile.id,
     scope,
     title,
     body,
-  });
+    image_uris: imageUris.filter(Boolean),
+  };
+  const { error } = await client.from('posts').insert(payload);
+
+  if (error && /image_uris|schema cache|PGRST204|column/i.test(`${error.message} ${error.code ?? ''}`)) {
+    const { image_uris: _imageUris, ...legacyPayload } = payload;
+    const { error: legacyError } = await client.from('posts').insert(legacyPayload);
+    if (legacyError) {
+      throw legacyError;
+    }
+    return;
+  }
 
   if (error) {
     throw error;
@@ -1098,7 +1224,7 @@ export async function setRemotePostLike(postId: string, liked: boolean) {
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const result = liked
@@ -1114,7 +1240,7 @@ export async function setRemotePostBookmark(postId: string, bookmarked: boolean)
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const result = bookmarked
@@ -1130,7 +1256,7 @@ export async function setRemoteCommentLike(commentId: string, liked: boolean) {
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const result = liked
@@ -1248,7 +1374,7 @@ export async function adminReviewRemoteStudentVerification(
   const client = assertSupabase();
   const reviewerId = await getRemoteUserId();
   if (!reviewerId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const { error } = await client
@@ -1257,7 +1383,7 @@ export async function adminReviewRemoteStudentVerification(
       status,
       reviewer_id: reviewerId,
       reviewed_at: new Date().toISOString(),
-      rejection_reason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없습니다.' : null,
+      rejection_reason: status === 'rejected' ? rejectionReason ?? '학생증 정보를 확인할 수 없어요.' : null,
     })
     .eq('user_id', userId)
     .eq('status', 'pending');
@@ -1290,7 +1416,7 @@ export async function uploadRemoteTimetableImage(image: string | TimetableImageI
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const response = await fetch(getTimetableImageUri(image));
@@ -1464,13 +1590,14 @@ export async function updateRemoteTimetableSemester(profile: Profile, semesterLa
   }
 }
 
-export async function updateRemoteTimetablePeriodTime(profile: Profile, periodTimes: PeriodTimeMap, period: number, time: PeriodTime) {
+export async function updateRemoteTimetablePeriodTimes(profile: Profile, periodTimes: PeriodTimeMap) {
   const client = assertSupabase();
   const timetableId = await getOrCreateRemoteTimetable(profile, 'manual');
+  const nextPeriodTimes = normalizePeriodTimes(periodTimes);
   const { error } = await client
     .from('timetables')
     .update({
-      period_times: normalizePeriodTimes(periodTimes),
+      period_times: nextPeriodTimes,
       source: 'manual',
       updated_at: new Date().toISOString(),
     })
@@ -1480,18 +1607,27 @@ export async function updateRemoteTimetablePeriodTime(profile: Profile, periodTi
     throw error;
   }
 
-  const { error: slotError } = await client
-    .from('timetable_slots')
-    .update({
-      start_time: time.startTime,
-      end_time: time.endTime,
-    })
-    .eq('timetable_id', timetableId)
-    .eq('period', period);
+  const slotResults = await Promise.all(
+    Object.entries(nextPeriodTimes).map(([periodKey, time]) =>
+      client
+        .from('timetable_slots')
+        .update({
+          start_time: time.startTime,
+          end_time: time.endTime,
+        })
+        .eq('timetable_id', timetableId)
+        .eq('period', Number(periodKey)),
+    ),
+  );
+  const slotError = slotResults.find((result) => result.error)?.error;
 
   if (slotError) {
     throw slotError;
   }
+}
+
+export async function updateRemoteTimetablePeriodTime(profile: Profile, periodTimes: PeriodTimeMap, period: number, time: PeriodTime) {
+  await updateRemoteTimetablePeriodTimes(profile, { ...periodTimes, [period]: time });
 }
 
 export async function updateRemoteTimetableSlot(slotId: string, patch: Partial<TimetableSlot>) {
@@ -1528,7 +1664,7 @@ export async function cacheRemoteMeal(meal: MealMenu) {
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const { error } = await client.from('meal_menus').upsert(
@@ -1557,7 +1693,7 @@ function getScorePredictionErrorMessage(payload: {
     return payload.error;
   }
 
-  return payload.error?.message ?? payload.message ?? payload.code ?? '성적 예측 요청에 실패했습니다.';
+  return payload.error?.message ?? payload.message ?? payload.code ?? '분포 참고값 요청에 실패했어요.';
 }
 
 function getRemoteErrorText(error: unknown) {
@@ -1766,13 +1902,13 @@ function normalizeScorePrediction(examId: string, payload: Record<string, unknow
     predictedTopScoreRange: topLow !== undefined && topHigh !== undefined ? [topLow, topHigh] : undefined,
     predictedCutScoreRange: cutLow !== undefined && cutHigh !== undefined ? [cutLow, cutHigh] : undefined,
     confidence: toOptionalNumber(payload.confidence),
-    rationale: typeof payload.rationale === 'string' ? payload.rationale : '현재 점수로 계산했습니다.',
+    rationale: typeof payload.rationale === 'string' ? payload.rationale : '현재 제출된 점수로 계산했어요.',
     biasWarning:
       typeof payload.biasWarning === 'string'
         ? payload.biasWarning
         : typeof payload.bias_warning === 'string'
           ? payload.bias_warning
-          : '참고용입니다.',
+          : '참고용이에요.',
   };
 }
 
@@ -1801,6 +1937,48 @@ export async function createRemoteScoreExam(profile: Profile, input: ScoreExamIn
   return mapScoreExam(data as ScoreExamRow);
 }
 
+export async function deleteRemoteScoreExam(examId: string) {
+  const client = assertSupabase();
+  const { error: rpcError } = await client.rpc('delete_score_exam', {
+    target_exam_id: examId,
+  });
+
+  if (!rpcError) {
+    return;
+  }
+
+  if (!isMissingRpcError(rpcError, 'delete_score_exam')) {
+    throw rpcError;
+  }
+
+  const { error } = await client.from('score_exams').delete().eq('id', examId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function loadRemoteScoreSubjectCandidates(): Promise<Pick<ScoreSubjectCandidateResult, 'subjects' | 'timetableSubjectCount'>> {
+  const client = assertSupabase();
+  const { data, error } = await client.rpc('get_score_subject_candidates');
+
+  if (error) {
+    if (isMissingRpcError(error, 'get_score_subject_candidates')) {
+      return { subjects: [], timetableSubjectCount: 0 };
+    }
+    throw error;
+  }
+
+  const subjects = ((data ?? []) as ScoreSubjectCandidateRow[])
+    .map((row) => String(row.subject ?? '').trim())
+    .filter(Boolean);
+
+  return {
+    subjects: [...new Set(subjects)],
+    timetableSubjectCount: subjects.length,
+  };
+}
+
 export async function upsertRemoteScoreSubmission(examId: string, score: number) {
   const client = assertSupabase();
   const { error } = await client.rpc('submit_score_submission', {
@@ -1818,7 +1996,7 @@ export async function upsertRemoteScoreSubmission(examId: string, score: number)
     }
     const userId = await getRemoteUserId();
     if (!userId) {
-      throw new Error('로그인 세션이 필요합니다.');
+      throw new Error('로그인 세션이 필요해요.');
     }
     await upsertRegularScoreSubmission(client, examId, userId, score);
     return;
@@ -1843,7 +2021,7 @@ export async function submitRemoteAdminTestScoreSubmission(examId: string, score
       }
       const userId = await getRemoteUserId();
       if (!userId) {
-        throw new Error('로그인 세션이 필요합니다.');
+        throw new Error('로그인 세션이 필요해요.');
       }
       await upsertRegularScoreSubmission(client, examId, userId, score);
       return;
@@ -1856,7 +2034,7 @@ export async function deleteRemoteScoreSubmission(examId: string) {
   const client = assertSupabase();
   const userId = await getRemoteUserId();
   if (!userId) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   if (scoreAdminTestColumnAvailable === false) {
@@ -1910,14 +2088,14 @@ export async function loadRemoteScoreExamStats(examId: string) {
 export async function requestRemoteScorePrediction(examId: string) {
   const client = assertSupabase();
   if (!providerConfig.scorePredictionEndpoint) {
-    throw new Error('성적 예측 endpoint가 설정되어 있지 않습니다.');
+    throw new Error('분포 참고값을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.');
   }
 
   const {
     data: { session },
   } = await client.auth.getSession();
   if (!session?.access_token) {
-    throw new Error('로그인 세션이 필요합니다.');
+    throw new Error('로그인 세션이 필요해요.');
   }
 
   const response = await fetch(providerConfig.scorePredictionEndpoint, {
@@ -1947,15 +2125,19 @@ export async function recordRemoteAnalyticsEvent(eventName: string, properties: 
     return;
   }
 
-  const userId = await getRemoteUserId();
-  const { error } = await supabase.from('analytics_events').insert({
-    user_id: userId,
-    event_name: eventName,
-    properties,
-  });
+  try {
+    const userId = await getRemoteUserId();
+    if (!userId) {
+      return;
+    }
 
-  if (error) {
-    throw error;
+    await supabase.from('analytics_events').insert({
+      user_id: userId,
+      event_name: eventName,
+      properties,
+    });
+  } catch {
+    // Analytics must never interrupt app usage or surface dev redboxes.
   }
 }
 

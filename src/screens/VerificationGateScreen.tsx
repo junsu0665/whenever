@@ -13,18 +13,21 @@ import { formatGradeClass } from '../utils/profile';
 export function VerificationGateScreen() {
   const { profile, studentVerifications, submitStudentCard } = useAppState();
   const [error, setError] = useState<string | null>(null);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const pending = profile.verificationStatus === 'pending';
   const rejected = profile.verificationStatus === 'rejected';
-  const latestVerification = studentVerifications.find((verification) => verification.userId === profile.id);
-  const studentCardUri = latestVerification?.displayUri ?? profile.studentCardUri;
+  const latestVerification = [...studentVerifications]
+    .filter((verification) => verification.userId === profile.id)
+    .sort((first, second) => new Date(second.submittedAt).getTime() - new Date(first.submittedAt).getTime())[0];
+  const studentCardUri = previewUri ?? latestVerification?.displayUri ?? profile.studentCardUri;
   const rejectionReason = latestVerification?.rejectionReason ?? profile.studentVerificationRejectionReason;
 
   const copy = useMemo(() => {
     if (pending) {
       return {
-        title: '승인 대기중이에요!',
-        body: '관리자가 학생증을 확인하고 있습니다. 승인되기 전까지는 앱을 사용할 수 없습니다.',
+        title: '승인 대기 중이에요.',
+        body: '관리자가 학생증을 확인하고 있어요. 승인 전에는 일부 기능이 제한돼요.',
         button: '제출 완료',
       };
     }
@@ -40,8 +43,8 @@ export function VerificationGateScreen() {
     }
 
     return {
-      title: '학생증 인증이 필요해요!',
-      body: '웨네버는 학교 인증이 끝난 학생만 사용할 수 있습니다. 먼저 학생증 사진을 제출해 주세요.',
+      title: '학생증 인증이 필요해요.',
+      body: '학교 인증이 끝나면 시간표, 급식, 게시판을 모두 사용할 수 있어요. 먼저 학생증 사진을 제출해 주세요.',
       button: '학생증 업로드',
     };
   }, [pending, rejected, rejectionReason]);
@@ -54,7 +57,7 @@ export function VerificationGateScreen() {
     setError(null);
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setError('학생증 사진 접근 권한이 필요합니다.');
+      setError('학생증 사진 접근 권한이 필요해요.');
       return;
     }
 
@@ -69,11 +72,18 @@ export function VerificationGateScreen() {
       return;
     }
 
+    const selectedUri = result.assets[0]?.uri;
+    if (!selectedUri) {
+      setError('선택한 사진을 읽지 못했어요. 다른 사진으로 다시 시도해 주세요.');
+      return;
+    }
+
+    setPreviewUri(selectedUri);
     setUploading(true);
     try {
-      await submitStudentCard(result.assets[0].uri);
+      await submitStudentCard(selectedUri);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : '학생증 업로드에 실패했습니다.');
+      setError(nextError instanceof Error ? nextError.message : '학생증 업로드에 실패했어요.');
     } finally {
       setUploading(false);
     }
@@ -92,7 +102,7 @@ export function VerificationGateScreen() {
       <Card style={styles.card}>
         <View style={styles.identityRow}>
           {studentCardUri ? (
-            <Image source={{ uri: studentCardUri }} style={styles.studentCardImage} />
+            <Image resizeMode="cover" source={{ uri: studentCardUri }} style={styles.studentCardImage} />
           ) : (
             <View style={styles.emptyCard}>
               <Upload color={colors.subtle} size={22} />
@@ -119,7 +129,7 @@ export function VerificationGateScreen() {
           onPress={pickStudentCard}
           style={styles.button}
         />
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {error ? <Text selectable style={styles.errorText}>{error}</Text> : null}
       </Card>
     </Screen>
   );
@@ -144,6 +154,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
     borderColor: colors.border,
+    borderCurve: 'continuous',
     borderRadius: radii.md,
     borderStyle: 'dashed',
     borderWidth: 1,
@@ -190,6 +201,7 @@ const styles = StyleSheet.create({
   },
   studentCardImage: {
     backgroundColor: colors.surfaceAlt,
+    borderCurve: 'continuous',
     borderRadius: radii.md,
     height: 78,
     width: 118,

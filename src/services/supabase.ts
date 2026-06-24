@@ -18,10 +18,10 @@ export const supabase: SupabaseClient | null = hasSupabaseConfig
 
 export const getBackendMode = () => {
   if (supabase) {
-    return 'Supabase 연결됨';
+    return '서비스 연결됨';
   }
 
-  return providerConfig.allowMocks ? 'Mock 데이터 모드' : '운영 설정 누락';
+  return providerConfig.allowMocks ? '데모 데이터 사용 중' : '연결 확인 필요';
 };
 
 export async function clearSupabaseAuthStorage() {

@@ -11,7 +11,9 @@ interface SectionHeaderProps {
 export function SectionHeader({ title, action }: SectionHeaderProps) {
   return (
     <View style={styles.row}>
-      <Text style={styles.title}>{title}</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>{title}</Text>
+      </View>
       {action}
     </View>
   );
@@ -29,5 +31,9 @@ const styles = StyleSheet.create({
     fontFamily: fonts.semibold,
     fontSize: typography.h3,
     fontWeight: '700',
+  },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
   },
 });

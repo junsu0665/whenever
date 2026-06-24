@@ -16,7 +16,7 @@ const timetableResponseSchema = {
     confidence: { type: 'number' },
     rows: {
       type: 'array',
-      minItems: 7,
+      minItems: 1,
       maxItems: 12,
       items: {
         type: 'object',
@@ -92,6 +92,15 @@ const prompt = [
   'For 창체 or other one-line cells, put it in subject and leave teacher and room empty.',
   'Return rows ordered by period. Return all visible period rows, including empty rows.',
 ].join('\n');
+
+type OcrContext = {
+  subjectCandidates?: string[];
+  teacherCandidates?: string[];
+  roomCandidates?: string[];
+  knownSlots?: Array<{ day?: string; period?: number; subject?: string; teacher?: string; room?: string }>;
+  expectedPeriodCount?: number;
+  periodsByDay?: Record<string, number[]>;
+};
 
 const dayColumns = [
   { key: 'mon', day: '월' },
@@ -180,6 +189,72 @@ function getOutputText(payload: { output_text?: string; output?: Array<{ content
   return '';
 }
 
+function normalizeContextList(values: unknown, limit: number) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  return [...new Set(values.map((value) => compact(value)).filter(Boolean))].slice(0, limit);
+}
+
+function normalizeOcrContext(value: unknown): OcrContext | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as OcrContext;
+  const knownSlots = Array.isArray(candidate.knownSlots)
+    ? candidate.knownSlots
+        .map((slot) => ({
+          day: compact(slot.day),
+          period: Math.round(Number(slot.period)),
+          subject: compact(slot.subject),
+          teacher: compact(slot.teacher),
+          room: compact(slot.room),
+        }))
+        .filter((slot) => timetableDays.includes(slot.day) && Number.isInteger(slot.period) && slot.period >= 1 && slot.period <= 12)
+        .slice(0, 80)
+    : [];
+  const expectedPeriodCount = Math.round(Number(candidate.expectedPeriodCount));
+
+  return {
+    subjectCandidates: normalizeContextList(candidate.subjectCandidates, 60),
+    teacherCandidates: normalizeContextList(candidate.teacherCandidates, 60),
+    roomCandidates: normalizeContextList(candidate.roomCandidates, 60),
+    knownSlots,
+    expectedPeriodCount: Number.isInteger(expectedPeriodCount) && expectedPeriodCount >= 1 && expectedPeriodCount <= 12
+      ? expectedPeriodCount
+      : undefined,
+    periodsByDay: candidate.periodsByDay && typeof candidate.periodsByDay === 'object' ? candidate.periodsByDay : undefined,
+  };
+}
+
+function buildPrompt(context: OcrContext | null) {
+  if (!context) {
+    return prompt;
+  }
+
+  const hints = {
+    expectedPeriodCount: context.expectedPeriodCount,
+    subjectCandidates: context.subjectCandidates,
+    teacherCandidates: context.teacherCandidates,
+    roomCandidates: context.roomCandidates,
+    knownSlots: context.knownSlots,
+    periodsByDay: context.periodsByDay,
+  };
+
+  return [
+    prompt,
+    '',
+    'Context hints from the already registered student timetable are below.',
+    'Use these hints ONLY to resolve ambiguous OCR text, similar-looking subject names, teacher names, room names, and expected row count.',
+    'Do not invent a class that is not visible in the image. If a cell is blank in the image, return it blank even if a known slot exists.',
+    'If the image row count is ambiguous, weekdays should have the same number of period rows. Prefer expectedPeriodCount when provided.',
+    'If visible text in a cell is ambiguous and a known slot with the same day/period exists, prefer that known subject/teacher/room.',
+    JSON.stringify(hints),
+  ].join('\n');
+}
+
 async function requireApprovedUser(request: Request) {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
@@ -243,13 +318,14 @@ Deno.serve(async (request) => {
     });
   }
 
-  const { image } = await request.json().catch(() => ({ image: '' }));
+  const { context, image } = await request.json().catch(() => ({ image: '', context: null }));
   if (!image || typeof image !== 'string') {
     return new Response(JSON.stringify({ error: { message: 'image is required' } }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 400,
     });
   }
+  const ocrContext = normalizeOcrContext(context);
 
   const model = Deno.env.get('OPENAI_MODEL') ?? 'gpt-4o-mini';
   const response = await fetch('https://api.openai.com/v1/responses', {
@@ -264,7 +340,7 @@ Deno.serve(async (request) => {
         {
           role: 'user',
           content: [
-            { type: 'input_text', text: prompt },
+            { type: 'input_text', text: buildPrompt(ocrContext) },
             { type: 'input_image', image_url: image, detail: 'high' },
           ],
         },

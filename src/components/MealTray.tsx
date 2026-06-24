@@ -6,8 +6,12 @@ import { colors, radii, spacing } from '../theme';
 export function MealTray() {
   return (
     <View style={styles.tray}>
-      <View style={[styles.dish, styles.rice]} />
-      <View style={[styles.dish, styles.soup]} />
+      <View style={[styles.dish, styles.rice]}>
+        <View style={styles.riceGrain} />
+      </View>
+      <View style={[styles.dish, styles.soup]}>
+        <View style={styles.soupRing} />
+      </View>
       <View style={[styles.smallDish, styles.main]} />
       <View style={[styles.smallDish, styles.kimchi]} />
       <View style={[styles.smallDish, styles.side]} />
@@ -17,10 +21,12 @@ export function MealTray() {
 
 const styles = StyleSheet.create({
   dish: {
+    alignItems: 'center',
     borderColor: colors.surface,
     borderRadius: 999,
     borderWidth: 3,
     height: 70,
+    justifyContent: 'center',
     width: 70,
   },
   kimchi: {
@@ -32,8 +38,14 @@ const styles = StyleSheet.create({
   rice: {
     backgroundColor: colors.surface,
   },
+  riceGrain: {
+    backgroundColor: colors.primarySoft,
+    borderRadius: 999,
+    height: 38,
+    width: 38,
+  },
   side: {
-    backgroundColor: colors.surface,
+    backgroundColor: colors.warningSoft,
   },
   smallDish: {
     borderColor: colors.surface,
@@ -44,6 +56,13 @@ const styles = StyleSheet.create({
   },
   soup: {
     backgroundColor: colors.primarySoft,
+  },
+  soupRing: {
+    backgroundColor: colors.primaryTint,
+    borderRadius: 999,
+    height: 34,
+    opacity: 0.42,
+    width: 34,
   },
   tray: {
     alignItems: 'center',

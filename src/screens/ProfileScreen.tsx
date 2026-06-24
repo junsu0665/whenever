@@ -1,14 +1,17 @@
 import * as ImagePicker from 'expo-image-picker';
 import React, { useMemo, useState } from 'react';
 import { Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Bell, Database, FileQuestion, FileText, IdCard, LogOut, ShieldAlert, ShieldCheck, Trash2, UserRound } from 'lucide-react-native';
+import { Bell, Clock3, Database, FileText, IdCard, LogOut, ShieldAlert, ShieldCheck, Trash2, UserRound, X } from 'lucide-react-native';
 
 import { Card } from '../components/Card';
 import { LegalPolicyModal } from '../components/LegalPolicyModal';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { ReminderMinuteChips } from '../components/ReminderMinuteChips';
 import { Screen } from '../components/Screen';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionHeader } from '../components/SectionHeader';
 import { SegmentedControl } from '../components/SegmentedControl';
+import { TimetablePeriodSettings } from '../components/TimetablePeriodSettings';
 import { ToggleRow } from '../components/ToggleRow';
 import { colors, fonts, radii, spacing, typography } from '../theme';
 import { useAppState } from '../state/AppStateContext';
@@ -28,7 +31,11 @@ const accountModeSegments: Array<{ key: AccountMode; label: string }> = [
   { key: 'admin', label: '관리자' },
 ];
 
-export function ProfileScreen() {
+function formatReminderMinutes(minutes: number) {
+  return minutes === 0 ? '정시에' : `${minutes}분 전에`;
+}
+
+export function ProfileScreen({ onClose }: { onClose?: () => void }) {
   const {
     accountMode,
     authError,
@@ -39,17 +46,22 @@ export function ProfileScreen() {
     notificationSettings,
     profile,
     setAccountMode,
+    setNotificationPreferences,
     setNotificationSetting,
     setShareStatus,
+    setTimetablePeriodTimes,
     signOut,
     studentVerifications,
     submitStudentCard,
+    timetable,
   } = useAppState();
   const [error, setError] = useState<string | null>(null);
   const [legalVisible, setLegalVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
   const status = statusCopy[profile.verificationStatus];
-  const latestVerification = studentVerifications.find((verification) => verification.userId === profile.id);
+  const latestVerification = [...studentVerifications]
+    .filter((verification) => verification.userId === profile.id)
+    .sort((first, second) => new Date(second.submittedAt).getTime() - new Date(first.submittedAt).getTime())[0];
   const studentCardUri = latestVerification?.displayUri ?? profile.studentCardUri;
   const rejectionReason = latestVerification?.rejectionReason ?? profile.studentVerificationRejectionReason;
 
@@ -67,7 +79,7 @@ export function ProfileScreen() {
     setError(null);
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setError('학생증 사진 접근 권한이 필요합니다.');
+      setError('학생증 사진 접근 권한이 필요해요.');
       return;
     }
 
@@ -83,7 +95,7 @@ export function ProfileScreen() {
       try {
         await submitStudentCard(result.assets[0].uri);
       } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : '학생증 업로드에 실패했습니다.');
+        setError(nextError instanceof Error ? nextError.message : '학생증 업로드에 실패했어요.');
       } finally {
         setUploading(false);
       }
@@ -91,7 +103,7 @@ export function ProfileScreen() {
   };
 
   const confirmDeleteAccount = () => {
-    Alert.alert('계정 삭제', '계정과 연결된 인증 이미지, 시간표, 프로필, 알림 정보가 삭제됩니다.', [
+    Alert.alert('계정 삭제', '계정과 연결된 인증 이미지, 시간표, 프로필, 알림 정보가 삭제돼요.', [
       { text: '취소', style: 'cancel' },
       {
         text: '계정 삭제',
@@ -104,145 +116,37 @@ export function ProfileScreen() {
   };
 
   return (
-    <Screen>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>내정보</Text>
-          <Text style={styles.subtitle}>
-            {profile.schoolName} · {formatGradeClass(profile.grade, profile.className)}
-          </Text>
-        </View>
-      </View>
+    <Screen contentStyle={onClose ? styles.settingsWindowContent : undefined}>
+      <ScreenHeader
+        action={
+          onClose ? (
+            <Pressable
+              accessibilityLabel="설정 나가기"
+              accessibilityRole="button"
+              onPress={onClose}
+              style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}
+            >
+              <X color={colors.text} size={22} strokeWidth={2.3} />
+            </Pressable>
+          ) : null
+        }
+        subtitle={`${profile.schoolName} · ${formatGradeClass(profile.grade, profile.className)}`}
+        title="설정"
+      />
 
       <Card>
-        <SectionHeader action={statusIcon} title={status.title} />
-        <View style={styles.identityRow}>
-          {studentCardUri ? <Image source={{ uri: studentCardUri }} style={styles.studentCardImage} /> : <View style={styles.emptyCard} />}
-          <View style={styles.identityCopy}>
-            <Text style={styles.identityTitle}>학생증 사진</Text>
-            <Text style={styles.identityMeta}>
-              {profile.verificationStatus === 'approved'
-                ? '승인된 학생만 웨네버를 사용할 수 있습니다.'
-                : profile.verificationStatus === 'pending'
-                  ? '승인 대기중이에요!'
-                  : rejectionReason
-                    ? `반려 사유: ${rejectionReason}`
-                    : '학생증 사진을 제출해야 앱을 사용할 수 있습니다.'}
+        <SectionHeader action={<UserRound color={colors.primary} size={22} />} title="내 정보" />
+        <View style={styles.profileSummary}>
+          <View style={styles.profileAvatar}>
+            <Text style={styles.profileAvatarText}>{profile.name.trim().slice(0, 1) || '나'}</Text>
+          </View>
+          <View style={styles.profileCopy}>
+            <Text style={styles.profileName}>{profile.name}</Text>
+            <Text style={styles.profileMeta}>
+              {profile.anonymousName} · {formatGradeClass(profile.grade, profile.className)}
             </Text>
           </View>
         </View>
-        {profile.verificationStatus === 'approved' ? (
-          <PrimaryButton
-            disabled
-            icon={<ShieldCheck color={colors.disabled} size={20} />}
-            label="인증 완료"
-            onPress={pickStudentCard}
-            variant="secondary"
-            style={styles.primaryGap}
-          />
-        ) : (
-          <PrimaryButton
-            disabled={uploading || profile.verificationStatus === 'pending'}
-            icon={<IdCard color={profile.verificationStatus === 'pending' ? colors.disabled : colors.surface} size={20} />}
-            label={uploading ? '업로드 중' : profile.verificationStatus === 'pending' ? '승인 대기중' : '학생증 업로드'}
-            onPress={pickStudentCard}
-            style={styles.primaryGap}
-          />
-        )}
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-      </Card>
-
-      {profile.isAdmin ? (
-        <Card>
-          <SectionHeader action={<UserRound color={colors.primary} size={22} />} title="계정 모드" />
-          <SegmentedControl onChange={setAccountMode} segments={accountModeSegments} value={accountMode} />
-          <View style={styles.modeDetails}>
-            <View style={styles.integrationRow}>
-              <Text style={styles.integrationLabel}>계정 권한</Text>
-              <Text style={styles.integrationValue}>관리자</Text>
-            </View>
-            <View style={styles.integrationRow}>
-              <Text style={styles.integrationLabel}>현재 모드</Text>
-              <Text style={styles.integrationValue}>{isAdminMode ? '관리자' : '사용자'}</Text>
-            </View>
-          </View>
-        </Card>
-      ) : null}
-
-      <Card>
-        <SectionHeader action={<Bell color={colors.primary} size={22} />} title="알림 설정" />
-        <ToggleRow
-          description={`수업 시작 ${notificationSettings.timetableReminderMinutes}분 전에 알림을 받습니다.`}
-          onValueChange={(value) => setNotificationSetting('timetable', value)}
-          title="시간표 알림"
-          value={notificationSettings.timetable}
-        />
-        <ToggleRow
-          description={`중식 ${notificationSettings.lunchReminderTime} · 석식 ${notificationSettings.dinnerReminderTime}`}
-          onValueChange={(value) => setNotificationSetting('meal', value)}
-          title="급식 알림"
-          value={notificationSettings.meal}
-        />
-        <ToggleRow
-          description="내 글 댓글과 학교 인기글 알림을 받습니다."
-          onValueChange={(value) => setNotificationSetting('community', value)}
-          title="게시판 알림"
-          value={notificationSettings.community}
-        />
-      </Card>
-
-      <Card>
-        <SectionHeader title="친구 시간표 공개" />
-        <ToggleRow
-          description="친구가 내 시간표와 겹치는 시간을 볼 수 있어요."
-          onValueChange={(value) => setShareStatus('timetableShareStatus', value ? 'enabled' : 'disabled')}
-          title="내 시간표 공유"
-          value={profile.timetableShareStatus === 'enabled'}
-        />
-        <ToggleRow
-          description="내가 친구의 공개 시간표를 볼 수 있어요."
-          onValueChange={(value) => setShareStatus('friendTimetableViewStatus', value ? 'enabled' : 'disabled')}
-          title="친구 시간표 보기"
-          value={profile.friendTimetableViewStatus === 'enabled'}
-        />
-      </Card>
-
-      <Card>
-        <SectionHeader action={<Database color={colors.primary} size={22} />} title="연동 상태" />
-        <View style={styles.integrationRow}>
-          <Text style={styles.integrationLabel}>백엔드</Text>
-          <Text style={styles.integrationValue}>{backendMode}</Text>
-        </View>
-        <View style={styles.integrationRow}>
-          <Text style={styles.integrationLabel}>학생 인증</Text>
-          <Text style={styles.integrationValue}>Storage 업로드 준비</Text>
-        </View>
-        <View style={styles.integrationRow}>
-          <Text style={styles.integrationLabel}>급식</Text>
-          <Text style={styles.integrationValue}>NEIS API fallback</Text>
-        </View>
-      </Card>
-
-      <Card>
-        <SectionHeader action={<FileText color={colors.primary} size={22} />} title="약관과 개인정보" />
-        <Text style={styles.legalText}>
-          학생증 이미지는 학생 인증 검수 목적으로만 사용하며, 승인 또는 반려 후 운영 보관 기간이 끝나면 삭제 대상입니다.
-          탈퇴하면 인증 이미지, 시간표 업로드, 프로필, 알림 토큰 등 계정 연결 데이터가 삭제됩니다.
-        </Text>
-        <Pressable accessibilityRole="button" onPress={() => setLegalVisible(true)} style={styles.legalLink}>
-          <Text style={styles.legalLinkText}>운영 정책 보기</Text>
-        </Pressable>
-      </Card>
-
-      <Card>
-        <SectionHeader action={<FileQuestion color={colors.primary} size={22} />} title="고객센터" />
-        <Text style={styles.legalText}>
-          문의, 신고 이의제기, 개인정보 요청은 {providerConfig.supportEmail} 로 접수합니다.
-        </Text>
-      </Card>
-
-      <Card>
-        <SectionHeader title="계정" />
         <View style={styles.accountActions}>
           <PrimaryButton
             disabled={authLoading}
@@ -263,7 +167,147 @@ export function ProfileScreen() {
             variant="danger"
           />
         </View>
-        {authError ? <Text style={styles.errorText}>{authError}</Text> : null}
+        {authError ? <Text selectable style={styles.errorText}>{authError}</Text> : null}
+      </Card>
+
+      <Card>
+        <SectionHeader action={statusIcon} title={status.title} />
+        <View style={styles.identityRow}>
+          {studentCardUri ? (
+            <Image resizeMode="cover" source={{ uri: studentCardUri }} style={styles.studentCardImage} />
+          ) : (
+            <View style={styles.emptyCard}>
+              <IdCard color={colors.subtle} size={22} />
+            </View>
+          )}
+          <View style={styles.identityCopy}>
+            <Text style={styles.identityTitle}>학생증 사진</Text>
+            <Text style={styles.identityMeta}>
+              {profile.verificationStatus === 'approved'
+                ? '승인된 학생만 웨네버를 사용할 수 있어요.'
+                : profile.verificationStatus === 'pending'
+                  ? '승인 대기 중이에요.'
+                  : rejectionReason
+                    ? `반려 사유: ${rejectionReason}`
+                    : '학생증 사진을 제출하면 앱을 사용할 수 있어요.'}
+            </Text>
+          </View>
+        </View>
+        {profile.verificationStatus === 'approved' ? (
+          <PrimaryButton
+            disabled
+            icon={<ShieldCheck color={colors.disabled} size={20} />}
+            label="인증 완료"
+            onPress={pickStudentCard}
+            variant="secondary"
+            style={styles.primaryGap}
+          />
+        ) : (
+          <PrimaryButton
+            disabled={uploading || profile.verificationStatus === 'pending'}
+            icon={<IdCard color={profile.verificationStatus === 'pending' ? colors.disabled : colors.surface} size={20} />}
+            label={uploading ? '업로드 중' : profile.verificationStatus === 'pending' ? '승인 대기 중' : '학생증 업로드'}
+            onPress={pickStudentCard}
+            style={styles.primaryGap}
+          />
+        )}
+        {error ? <Text selectable style={styles.errorText}>{error}</Text> : null}
+      </Card>
+
+      <Card>
+        <SectionHeader action={<Bell color={colors.primary} size={22} />} title="알림 설정" />
+        <ToggleRow
+          description={
+            notificationSettings.timetable
+              ? `수업 시작 ${formatReminderMinutes(notificationSettings.timetableReminderMinutes)} 받아요.`
+              : '수업 시작 알림을 받지 않아요.'
+          }
+          onValueChange={(value) => setNotificationSetting('timetable', value)}
+          title="수업 시작 알림"
+          value={notificationSettings.timetable}
+        />
+        {notificationSettings.timetable ? (
+          <View style={styles.reminderPanel}>
+            <Text style={styles.settingLabel}>알림 시점</Text>
+            <ReminderMinuteChips
+              onChange={(timetableReminderMinutes) => setNotificationPreferences({ timetableReminderMinutes })}
+              value={notificationSettings.timetableReminderMinutes}
+            />
+          </View>
+        ) : null}
+        <ToggleRow
+          description={`중식 ${notificationSettings.lunchReminderTime} · 석식 ${notificationSettings.dinnerReminderTime}`}
+          onValueChange={(value) => setNotificationSetting('meal', value)}
+          title="급식 알림"
+          value={notificationSettings.meal}
+        />
+        <ToggleRow
+          description="내 글 댓글과 학교 인기글 알림을 받아요."
+          onValueChange={(value) => setNotificationSetting('community', value)}
+          title="게시판 알림"
+          value={notificationSettings.community}
+        />
+      </Card>
+
+      <Card>
+        <SectionHeader action={<Clock3 color={colors.primary} size={22} />} title="시간표 설정" />
+        <TimetablePeriodSettings onChange={setTimetablePeriodTimes} timetable={timetable} />
+      </Card>
+
+      <Card>
+        <SectionHeader title="공개 설정" />
+        <ToggleRow
+          description="같은 수업을 듣는 사람이 겹치는 수업 여부만 볼 수 있어요."
+          onValueChange={(value) => setShareStatus('timetableShareStatus', value ? 'enabled' : 'disabled')}
+          title="내 시간표 공개"
+          value={profile.timetableShareStatus === 'enabled'}
+        />
+        <ToggleRow
+          description="공개한 학생 중 나와 같은 수업을 듣는 사람만 볼 수 있어요."
+          onValueChange={(value) => setShareStatus('friendTimetableViewStatus', value ? 'enabled' : 'disabled')}
+          title="같이 듣는 사람 보기"
+          value={profile.friendTimetableViewStatus === 'enabled'}
+        />
+      </Card>
+
+      {profile.isAdmin ? (
+        <Card>
+          <SectionHeader action={<Database color={colors.primary} size={22} />} title="관리자" />
+          <SegmentedControl onChange={setAccountMode} segments={accountModeSegments} value={accountMode} />
+          <View style={styles.modeDetails}>
+            <View style={styles.integrationRow}>
+              <Text style={styles.integrationLabel}>계정 권한</Text>
+              <Text style={styles.integrationValue}>관리자</Text>
+            </View>
+            <View style={styles.integrationRow}>
+              <Text style={styles.integrationLabel}>현재 모드</Text>
+              <Text style={styles.integrationValue}>{isAdminMode ? '관리자' : '사용자'}</Text>
+            </View>
+            <View style={styles.integrationRow}>
+              <Text style={styles.integrationLabel}>서비스 상태</Text>
+              <Text style={styles.integrationValue}>{backendMode}</Text>
+            </View>
+            <View style={styles.integrationRow}>
+              <Text style={styles.integrationLabel}>학생 인증</Text>
+              <Text style={styles.integrationValue}>검수 가능</Text>
+            </View>
+            <View style={styles.integrationRow}>
+              <Text style={styles.integrationLabel}>급식</Text>
+              <Text style={styles.integrationValue}>자동 동기화</Text>
+            </View>
+          </View>
+        </Card>
+      ) : null}
+
+      <Card>
+        <SectionHeader action={<FileText color={colors.primary} size={22} />} title="약관과 개인정보" />
+        <Text style={styles.legalText}>
+          학생증 이미지는 학생 인증 검수 목적으로만 사용해요. 승인 또는 반려 후 운영 보관 기간이 끝나면 삭제 대상이에요.
+          탈퇴하면 인증 이미지, 시간표 업로드, 프로필, 알림 토큰 등 계정 연결 데이터가 삭제돼요. 문의는 {providerConfig.supportEmail} 로 보내 주세요.
+        </Text>
+        <Pressable accessibilityRole="button" onPress={() => setLegalVisible(true)} style={styles.legalLink}>
+          <Text style={styles.legalLinkText}>운영 정책 보기</Text>
+        </Pressable>
       </Card>
       <LegalPolicyModal onClose={() => setLegalVisible(false)} visible={legalVisible} />
     </Screen>
@@ -273,12 +317,30 @@ export function ProfileScreen() {
 const styles = StyleSheet.create({
   accountActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.md,
+    marginTop: spacing.md,
   },
   accountButton: {
     flex: 1,
+    minWidth: 136,
+  },
+  closeButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderCurve: 'continuous',
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    height: 42,
+    justifyContent: 'center',
+    width: 42,
+  },
+  closeButtonPressed: {
+    backgroundColor: colors.surfacePressed,
   },
   emptyCard: {
+    alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
     borderColor: colors.border,
     borderCurve: 'continuous',
@@ -286,6 +348,7 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
     borderWidth: 1,
     height: 72,
+    justifyContent: 'center',
     width: 108,
   },
   errorText: {
@@ -293,11 +356,6 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
     fontWeight: '600',
     marginTop: spacing.md,
-  },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
   },
   identityCopy: {
     flex: 1,
@@ -363,23 +421,61 @@ const styles = StyleSheet.create({
   primaryGap: {
     marginTop: spacing.lg,
   },
+  profileAvatar: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.md,
+    height: 46,
+    justifyContent: 'center',
+    width: 46,
+  },
+  profileAvatarText: {
+    color: colors.primary,
+    fontFamily: fonts.semibold,
+    fontSize: typography.h3,
+    fontWeight: '700',
+  },
+  profileCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  profileMeta: {
+    color: colors.muted,
+    fontFamily: fonts.regular,
+    fontSize: typography.small,
+    marginTop: spacing.xs,
+  },
+  profileName: {
+    color: colors.text,
+    fontFamily: fonts.semibold,
+    fontSize: typography.h3,
+    fontWeight: '700',
+  },
+  profileSummary: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  reminderPanel: {
+    borderTopColor: colors.dividerSoft,
+    borderTopWidth: 1,
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  settingsWindowContent: {
+    paddingBottom: spacing.xl,
+  },
+  settingLabel: {
+    color: colors.muted,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '600',
+  },
   studentCardImage: {
     backgroundColor: colors.surfaceAlt,
     borderCurve: 'continuous',
     borderRadius: radii.lg,
     height: 72,
     width: 108,
-  },
-  subtitle: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.small,
-    marginTop: spacing.xs,
-  },
-  title: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.h1,
-    fontWeight: '600',
   },
 });

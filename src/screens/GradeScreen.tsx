@@ -1,18 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { BarChart3, BrainCircuit, ChevronRight, ClipboardList, LockKeyhole, Plus, RefreshCw, Trash2 } from 'lucide-react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { BarChart3, ChevronRight, ClipboardList, Flag, LockKeyhole, Plus, Trash2 } from 'lucide-react-native';
 
 import { Card } from '../components/Card';
+import { EmptyState } from '../components/EmptyState';
 import { Pill } from '../components/Pill';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { RefreshGlyph } from '../components/RefreshGlyph';
 import { AnalysisSponsorCard, BottomBannerAd } from '../components/RevenueAds';
 import { Screen } from '../components/Screen';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionHeader } from '../components/SectionHeader';
 import { useAppState } from '../state/AppStateContext';
 import { colors, fonts, radii, spacing, typography } from '../theme';
 import { ScoreExam } from '../types';
+import { getScoreReportKey } from '../utils/scoreReports';
 
-type GradeErrorTarget = 'create' | 'score' | 'stats' | 'prediction';
+type GradeErrorTarget = 'create' | 'score' | 'stats' | 'prediction' | 'sync';
 
 function parseNumberInput(value: string) {
   const normalized = value.trim().replace(',', '.');
@@ -39,9 +43,13 @@ function getExamLabel(exam: ScoreExam) {
 export function GradeScreen() {
   const {
     createScoreExam,
+    deleteScoreExam,
     deleteScore,
     isAdminMode,
+    loadScoreSubjectCandidates,
     refreshScoreExamStats,
+    reportedScoreKeys,
+    reportScoreAnomaly,
     requestScorePrediction,
     scoreError,
     scoreExamStats,
@@ -53,17 +61,19 @@ export function GradeScreen() {
     submitScore,
   } = useAppState();
   const [query, setQuery] = useState('');
-  const [subject, setSubject] = useState('');
   const [examName, setExamName] = useState('');
   const [maxScore, setMaxScore] = useState('100');
-  const [totalStudents, setTotalStudents] = useState('');
   const [scoreInput, setScoreInput] = useState('');
+  const [subjectCandidates, setSubjectCandidates] = useState<string[]>([]);
+  const [selectedSubjectCandidates, setSelectedSubjectCandidates] = useState<string[]>([]);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [localError, setLocalError] = useState<{ target: GradeErrorTarget; message: string } | null>(null);
   const [scoreErrorTarget, setScoreErrorTarget] = useState<GradeErrorTarget | null>(null);
 
   const selectedExam = scoreExams.find((exam) => exam.id === selectedScoreExamId);
   const adminScoreTesting = isAdminMode;
   const canViewScoreResults = Boolean(selectedExam && (adminScoreTesting || selectedExam.myScore !== undefined));
+  const statsRefreshing = scoreLoading && scoreErrorTarget === 'stats';
   const filteredExams = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) {
@@ -98,34 +108,65 @@ export function GradeScreen() {
 
   const createExam = async () => {
     const parsedMaxScore = parseNumberInput(maxScore);
-    const parsedTotalStudents = parseNumberInput(totalStudents);
-    if (!subject.trim() || !examName.trim()) {
-      setLocalError({ target: 'create', message: '과목명과 시험명을 입력해 주세요.' });
+    if (!examName.trim()) {
+      setLocalError({ target: 'create', message: '시험명을 입력해 주세요.' });
+      return;
+    }
+    if (!selectedSubjectCandidates.length) {
+      setLocalError({ target: 'create', message: '학생 시간표나 NEIS에서 과목을 선택해 주세요.' });
       return;
     }
     if (!parsedMaxScore || parsedMaxScore <= 0) {
       setLocalError({ target: 'create', message: '만점을 확인해 주세요.' });
       return;
     }
-    if (parsedTotalStudents !== undefined && parsedTotalStudents < 1) {
-      setLocalError({ target: 'create', message: '응시자 수를 확인해 주세요.' });
-      return;
-    }
 
+    setSyncMessage(null);
     setLocalError(null);
     setScoreErrorTarget('create');
-    const createdId = await createScoreExam({
-      subject,
-      examName,
-      maxScore: parsedMaxScore,
-      totalStudents: parsedTotalStudents ? Math.round(parsedTotalStudents) : undefined,
-    });
-    if (createdId) {
-      setSubject('');
-      setExamName('');
-      setTotalStudents('');
-      selectScoreExam(createdId);
+    let firstCreatedId: string | undefined;
+    let createdCount = 0;
+    for (const selectedSubject of selectedSubjectCandidates) {
+      const createdId = await createScoreExam({
+        subject: selectedSubject,
+        examName,
+        maxScore: parsedMaxScore,
+      });
+      if (createdId) {
+        firstCreatedId = firstCreatedId ?? createdId;
+        createdCount += 1;
+      }
     }
+
+    if (firstCreatedId) {
+      setExamName('');
+      setSelectedSubjectCandidates([]);
+      selectScoreExam(firstCreatedId);
+      setSyncMessage(`${createdCount}개 과목 시험을 만들었어요.`);
+    }
+  };
+
+  const loadSubjectCandidates = async () => {
+    setSyncMessage(null);
+    setLocalError(null);
+    setScoreErrorTarget('sync');
+    const result = await loadScoreSubjectCandidates();
+    setSubjectCandidates(result.subjects);
+    setSelectedSubjectCandidates((current) => current.filter((subject) => result.subjects.includes(subject)));
+    setSyncMessage(
+      result.subjects.length
+        ? `${result.subjects.length}개 과목을 불러왔어요. 시간표 ${result.timetableSubjectCount}개 · NEIS ${result.neisSubjectCount}개`
+        : '불러온 과목이 없어요.',
+    );
+  };
+
+  const toggleSubjectCandidate = (targetSubject: string) => {
+    setLocalError(null);
+    setSelectedSubjectCandidates((current) =>
+      current.includes(targetSubject)
+        ? current.filter((subject) => subject !== targetSubject)
+        : [...current, targetSubject],
+    );
   };
 
   const saveScore = async () => {
@@ -158,10 +199,20 @@ export function GradeScreen() {
     await deleteScore(selectedExam.id);
   };
 
+  const removeSelectedExam = async () => {
+    if (!selectedExam || !adminScoreTesting) {
+      return;
+    }
+
+    setLocalError(null);
+    setScoreErrorTarget('sync');
+    await deleteScoreExam(selectedExam.id);
+  };
+
   const refreshStats = () => {
     if (!selectedExam || !canViewScoreResults) {
       if (selectedExam) {
-        setLocalError({ target: 'stats', message: '점수를 제출해야 성적을 볼 수 있습니다.' });
+        setLocalError({ target: 'stats', message: '점수를 제출하면 성적을 볼 수 있어요.' });
       }
       return;
     }
@@ -173,7 +224,7 @@ export function GradeScreen() {
   const runPrediction = () => {
     if (!selectedExam || !canViewScoreResults) {
       if (selectedExam) {
-        setLocalError({ target: 'prediction', message: '점수를 제출해야 성적을 볼 수 있습니다.' });
+        setLocalError({ target: 'prediction', message: '점수를 제출하면 분포를 볼 수 있어요.' });
       }
       return;
     }
@@ -184,17 +235,18 @@ export function GradeScreen() {
 
   return (
     <Screen>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>성적</Text>
-        </View>
-        <View style={styles.headerIcon}>
-          <BarChart3 color={colors.primary} size={24} />
-        </View>
-      </View>
+      <ScreenHeader
+        action={
+          <View style={styles.headerIcon}>
+            <BarChart3 color={colors.primary} size={24} />
+          </View>
+        }
+        subtitle={`${scoreExams.length}개 시험`}
+        title="성적"
+      />
 
       <Card style={styles.cardGap}>
-        <SectionHeader action={<Pill label="5등급제" tone="blue" />} title="시험 찾기" />
+        <SectionHeader action={<Pill label={adminScoreTesting ? '관리자' : '학생'} tone="primary" />} title="시험 찾기" />
         <TextInput
           autoCapitalize="none"
           onChangeText={setQuery}
@@ -210,13 +262,16 @@ export function GradeScreen() {
                 accessibilityRole="button"
                 key={exam.id}
                 onPress={() => selectScoreExam(exam.id)}
-                style={[styles.examRow, exam.id === selectedExam?.id ? styles.examRowActive : null]}
+                style={({ pressed }) => [
+                  styles.examRow,
+                  exam.id === selectedExam?.id ? styles.examRowActive : null,
+                  pressed && exam.id !== selectedExam?.id ? styles.examRowPressed : null,
+                ]}
               >
                 <View style={styles.examCopy}>
-                  <Text style={styles.examTitle}>{getExamLabel(exam)}</Text>
+                  <Text numberOfLines={1} style={styles.examTitle}>{getExamLabel(exam)}</Text>
                   <Text style={styles.examMeta}>
                     만점 {formatScore(exam.maxScore)}
-                    {exam.totalStudents ? ` · 전체 ${exam.totalStudents}명` : ''}{' '}
                     {exam.myScore !== undefined ? `· 내 점수 ${formatScore(exam.myScore)}` : ''}
                   </Text>
                 </View>
@@ -224,95 +279,142 @@ export function GradeScreen() {
               </Pressable>
             ))
           ) : (
-            <Text style={styles.emptyText}>아직 등록된 시험이 없습니다.</Text>
+            <EmptyState
+              compact
+              icon={<ClipboardList color={colors.subtle} size={22} />}
+              title="아직 등록된 시험이 없어요."
+            />
           )}
         </View>
       </Card>
 
-      <Card style={styles.cardGap}>
-        <SectionHeader action={<Plus color={colors.primary} size={21} />} title="시험 만들기" />
-        <View style={styles.fieldGrid}>
-          <TextInput
-            onChangeText={setSubject}
-            placeholder="과목명"
-            placeholderTextColor={colors.subtle}
-            style={styles.input}
-            value={subject}
-          />
-          <TextInput
-            onChangeText={setExamName}
-            placeholder="시험명"
-            placeholderTextColor={colors.subtle}
-            style={styles.input}
-            value={examName}
-          />
-          <View style={styles.twoColumn}>
+      {adminScoreTesting ? (
+        <Card style={styles.cardGap}>
+          <SectionHeader action={<Plus color={colors.primary} size={21} />} title="시험 만들기" />
+          <View style={styles.fieldGrid}>
+            <TextInput
+              onChangeText={setExamName}
+              placeholder="시험명"
+              placeholderTextColor={colors.subtle}
+              style={styles.input}
+              value={examName}
+            />
             <TextInput
               keyboardType="decimal-pad"
               onChangeText={setMaxScore}
               placeholder="만점"
               placeholderTextColor={colors.subtle}
-              style={[styles.input, styles.flexInput]}
+              style={styles.input}
               value={maxScore}
             />
-            <TextInput
-              keyboardType="number-pad"
-              onChangeText={setTotalStudents}
-              placeholder="전체 응시자 수"
-              placeholderTextColor={colors.subtle}
-              style={[styles.input, styles.flexInput]}
-              value={totalStudents}
-            />
           </View>
-        </View>
-        <PrimaryButton
-          disabled={scoreLoading}
-          icon={<Plus color={scoreLoading ? colors.disabled : colors.surface} size={19} />}
-          label="시험 등록"
-          onPress={createExam}
-        />
-        <FieldError text={getError('create')} />
-      </Card>
-
-      <Card style={styles.cardGap}>
-        <SectionHeader title="점수 제출" />
-        {selectedExam ? (
-          <>
-            <View style={styles.selectedExamBox}>
-              <Text style={styles.selectedExamTitle}>{getExamLabel(selectedExam)}</Text>
-              <Text style={styles.selectedExamMeta}>
-                {canViewScoreResults ? `참여 ${scoreExamStats?.submissionCount ?? 0}명 · ` : ''}만점 {formatScore(selectedExam.maxScore)}
-              </Text>
+          <PrimaryButton
+            disabled={scoreLoading}
+            icon={<ClipboardList color={scoreLoading ? colors.disabled : colors.text} size={19} />}
+            label="학생 시간표 + NEIS 과목 불러오기"
+            onPress={loadSubjectCandidates}
+            variant="secondary"
+          />
+          <View style={styles.neisSubjectPanel}>
+            <View style={styles.neisSubjectHeader}>
+              <Text style={styles.neisSubjectTitle}>시험 과목 선택</Text>
+              <Text style={styles.neisSubjectMeta}>{selectedSubjectCandidates.length}개 선택</Text>
             </View>
-            <TextInput
-              keyboardType="decimal-pad"
-              onChangeText={setScoreInput}
-              placeholder="내 점수"
-              placeholderTextColor={colors.subtle}
-              style={styles.input}
-              value={scoreInput}
-            />
-            <PrimaryButton
-              disabled={scoreLoading}
-              icon={<ClipboardList color={scoreLoading ? colors.disabled : colors.surface} size={19} />}
-              label={adminScoreTesting ? '테스트 제출' : selectedExam.myScore !== undefined ? '점수 수정' : '점수 제출'}
-              onPress={saveScore}
-            />
-            {selectedExam.myScore !== undefined ? (
+            {subjectCandidates.length ? (
+              <View style={styles.neisSubjectGrid}>
+                {subjectCandidates.map((subjectCandidate) => {
+                  const active = selectedSubjectCandidates.includes(subjectCandidate);
+                  return (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      key={subjectCandidate}
+                      onPress={() => toggleSubjectCandidate(subjectCandidate)}
+                      style={({ pressed }) => [
+                        styles.neisSubjectChip,
+                        active && styles.neisSubjectChipActive,
+                        pressed && !active ? styles.neisSubjectChipPressed : null,
+                      ]}
+                    >
+                      <Text style={[styles.neisSubjectChipText, active && styles.neisSubjectChipTextActive]}>{subjectCandidate}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : (
+              <Text style={styles.emptyText}>학생 시간표와 NEIS를 불러오면 과목을 선택할 수 있어요.</Text>
+            )}
+          </View>
+          {syncMessage ? <Text style={styles.syncMessage}>{syncMessage}</Text> : null}
+          <PrimaryButton
+            disabled={scoreLoading || !selectedSubjectCandidates.length}
+            icon={<Plus color={scoreLoading || !selectedSubjectCandidates.length ? colors.disabled : colors.surface} size={19} />}
+            label={`${selectedSubjectCandidates.length || 0}개 과목 시험 만들기`}
+            onPress={createExam}
+          />
+          <FieldError text={getError('create')} />
+          <FieldError text={getError('sync')} />
+        </Card>
+      ) : null}
+
+      {adminScoreTesting && selectedExam ? (
+        <Card style={styles.cardGap}>
+          <SectionHeader action={<Trash2 color={colors.danger} size={20} />} title="시험 삭제" />
+          <View style={styles.selectedExamBox}>
+            <Text style={styles.selectedExamTitle}>{getExamLabel(selectedExam)}</Text>
+            <Text style={styles.selectedExamMeta}>삭제하면 제출된 익명 점수도 함께 삭제돼요.</Text>
+          </View>
+          <PrimaryButton
+            disabled={scoreLoading}
+            icon={<Trash2 color={colors.danger} size={19} />}
+            label="선택 시험 삭제"
+            onPress={removeSelectedExam}
+            variant="danger"
+          />
+        </Card>
+      ) : null}
+
+      {!adminScoreTesting ? (
+        <Card style={styles.cardGap}>
+          <SectionHeader title="점수 제출" />
+          {selectedExam ? (
+            <>
+              <View style={styles.selectedExamBox}>
+                <Text style={styles.selectedExamTitle}>{getExamLabel(selectedExam)}</Text>
+                <Text style={styles.selectedExamMeta}>
+                  {canViewScoreResults ? `제출 ${scoreExamStats?.submissionCount ?? 0}명 · ` : ''}만점 {formatScore(selectedExam.maxScore)}
+                </Text>
+              </View>
+              <TextInput
+                keyboardType="decimal-pad"
+                onChangeText={setScoreInput}
+                placeholder="내 점수"
+                placeholderTextColor={colors.subtle}
+                style={styles.input}
+                value={scoreInput}
+              />
               <PrimaryButton
                 disabled={scoreLoading}
-                icon={<Trash2 color={colors.danger} size={19} />}
-                label="내 점수 삭제"
-                onPress={removeScore}
-                variant="danger"
+                icon={<ClipboardList color={scoreLoading ? colors.disabled : colors.surface} size={19} />}
+                label={selectedExam.myScore !== undefined ? '점수 수정' : '점수 제출'}
+                onPress={saveScore}
               />
-            ) : null}
-            <FieldError text={getError('score')} />
-          </>
-        ) : (
-          <Text style={styles.emptyText}>시험을 선택하거나 새 시험을 만들어 주세요.</Text>
-        )}
-      </Card>
+              {selectedExam.myScore !== undefined ? (
+                <PrimaryButton
+                  disabled={scoreLoading}
+                  icon={<Trash2 color={colors.danger} size={19} />}
+                  label="내 점수 삭제"
+                  onPress={removeScore}
+                  variant="danger"
+                />
+              ) : null}
+              <FieldError text={getError('score')} />
+            </>
+          ) : (
+            <EmptyState compact title="시험을 선택해 주세요." />
+          )}
+        </Card>
+      ) : null}
 
       <Card style={styles.cardGap}>
         <SectionHeader
@@ -322,34 +424,45 @@ export function GradeScreen() {
               accessibilityState={{ disabled: !selectedExam || !canViewScoreResults }}
               disabled={!selectedExam || !canViewScoreResults}
               onPress={refreshStats}
-              style={[styles.iconButton, (!selectedExam || !canViewScoreResults) && styles.iconButtonDisabled]}
+              style={({ pressed }) => [
+                styles.iconButton,
+                (!selectedExam || !canViewScoreResults) && styles.iconButtonDisabled,
+                pressed && selectedExam && canViewScoreResults ? styles.iconButtonPressed : null,
+              ]}
             >
-              {scoreLoading ? (
-                <ActivityIndicator color={colors.primary} />
-              ) : (
-                <RefreshCw color={!selectedExam || !canViewScoreResults ? colors.disabled : colors.primary} size={19} />
-              )}
+              <RefreshGlyph
+                active={statsRefreshing}
+                color={!selectedExam || !canViewScoreResults ? colors.disabled : colors.primary}
+                size={19}
+              />
             </Pressable>
           }
-          title="점수 현황"
+          title={adminScoreTesting ? '점수 관리 / 통계' : '점수 현황'}
         />
-        <StatsContent locked={Boolean(selectedExam && !canViewScoreResults)} stats={canViewScoreResults ? scoreExamStats : null} />
+        <StatsContent
+          locked={Boolean(selectedExam && !canViewScoreResults)}
+          onReportScore={reportScoreAnomaly}
+          reportedScoreKeys={reportedScoreKeys}
+          stats={canViewScoreResults ? scoreExamStats : null}
+        />
         <FieldError text={getError('stats')} />
       </Card>
 
-      <Card style={styles.cardGap}>
-        <SectionHeader action={<BrainCircuit color={colors.primary} size={22} />} title="석차/분포 확인" />
-        <Text style={styles.warningText}>익명 제보 기반 참고용입니다.</Text>
-        {scoreLoading && scoreErrorTarget === 'prediction' ? <AnalysisSponsorCard /> : null}
-        <PredictionContent locked={Boolean(selectedExam && !canViewScoreResults)} prediction={canViewScoreResults ? scorePrediction : null} />
-        <PrimaryButton
-          disabled={!selectedExam || !canViewScoreResults || scoreLoading}
-          icon={<BrainCircuit color={!selectedExam || !canViewScoreResults || scoreLoading ? colors.disabled : colors.surface} size={19} />}
-          label="분포 예측 보기"
-          onPress={runPrediction}
-        />
-        <FieldError text={getError('prediction')} />
-      </Card>
+      {!adminScoreTesting ? (
+        <Card style={styles.cardGap}>
+          <SectionHeader action={<BarChart3 color={colors.primary} size={22} />} title="분포 참고값" />
+          <Text style={styles.warningText}>익명 제보 기반 참고용이에요.</Text>
+          {scoreLoading && scoreErrorTarget === 'prediction' ? <AnalysisSponsorCard /> : null}
+          <PredictionContent locked={Boolean(selectedExam && !canViewScoreResults)} prediction={canViewScoreResults ? scorePrediction : null} />
+          <PrimaryButton
+            disabled={!selectedExam || !canViewScoreResults || scoreLoading}
+            icon={<BarChart3 color={!selectedExam || !canViewScoreResults || scoreLoading ? colors.disabled : colors.surface} size={19} />}
+            label="분포 보기"
+            onPress={runPrediction}
+          />
+          <FieldError text={getError('prediction')} />
+        </Card>
+      ) : null}
 
       {canViewScoreResults ? <BottomBannerAd placement="score_result_banner" /> : null}
     </Screen>
@@ -368,13 +481,23 @@ function LockedScoreContent({ message }: { message: string }) {
   );
 }
 
-function StatsContent({ locked, stats }: { locked: boolean; stats: ReturnType<typeof useAppState>['scoreExamStats'] }) {
+function StatsContent({
+  locked,
+  onReportScore,
+  reportedScoreKeys,
+  stats,
+}: {
+  locked: boolean;
+  onReportScore: (examId: string, score: number, rank: number) => void;
+  reportedScoreKeys: string[];
+  stats: ReturnType<typeof useAppState>['scoreExamStats'];
+}) {
   if (locked) {
-    return <LockedScoreContent message="내 점수를 제출한 뒤 익명 점수 현황을 볼 수 있습니다." />;
+    return <LockedScoreContent message="내 점수를 제출한 뒤 익명 점수 현황을 볼 수 있어요." />;
   }
 
   if (!stats) {
-    return <Text style={styles.emptyText}>시험을 선택해 주세요.</Text>;
+    return <EmptyState compact title="시험을 선택해 주세요." />;
   }
 
   if (!stats.ready) {
@@ -400,10 +523,23 @@ function StatsContent({ locked, stats }: { locked: boolean; stats: ReturnType<ty
       <View style={styles.scoreList}>
         <Text style={styles.scoreListTitle}>점수 목록</Text>
         {stats.anonymousScores.map((score, index) => (
-          <View key={`${score}-${index}`} style={styles.scoreRow}>
+          <View
+            key={`${score}-${index}`}
+            style={[
+              styles.scoreRow,
+              reportedScoreKeys.includes(getScoreReportKey(stats.examId, score, index + 1)) ? styles.scoreRowReported : null,
+            ]}
+          >
             <Text style={styles.scoreRank}>{index + 1}등</Text>
             <Text style={styles.scoreAlias}>익명 {index + 1}</Text>
             <Text style={styles.scoreValue}>{formatScore(score)}점</Text>
+            <ScoreReportButton
+              examId={stats.examId}
+              onReportScore={onReportScore}
+              rank={index + 1}
+              reported={reportedScoreKeys.includes(getScoreReportKey(stats.examId, score, index + 1))}
+              score={score}
+            />
           </View>
         ))}
       </View>
@@ -411,13 +547,40 @@ function StatsContent({ locked, stats }: { locked: boolean; stats: ReturnType<ty
   );
 }
 
+function ScoreReportButton({
+  examId,
+  onReportScore,
+  rank,
+  reported,
+  score,
+}: {
+  examId: string;
+  onReportScore: (examId: string, score: number, rank: number) => void;
+  rank: number;
+  reported: boolean;
+  score: number;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: reported }}
+      disabled={reported}
+      onPress={() => onReportScore(examId, score, rank)}
+      style={({ pressed }) => [styles.scoreReportButton, reported && styles.scoreReportButtonDone, pressed && !reported ? styles.scoreReportButtonPressed : null]}
+    >
+      <Flag color={reported ? colors.subtle : colors.danger} size={14} />
+      <Text style={[styles.scoreReportText, reported && styles.scoreReportTextDone]}>{reported ? '신고됨' : '신고'}</Text>
+    </Pressable>
+  );
+}
+
 function PredictionContent({ locked, prediction }: { locked: boolean; prediction: ReturnType<typeof useAppState>['scorePrediction'] }) {
   if (locked) {
-    return <LockedScoreContent message="내 점수를 제출한 뒤 AI 예측을 볼 수 있습니다." />;
+    return <LockedScoreContent message="내 점수를 제출한 뒤 분포 참고값을 볼 수 있어요." />;
   }
 
   if (!prediction) {
-    return <Text style={styles.emptyText}>15명 이상 필요</Text>;
+    return <EmptyState compact title="15명 이상 모이면 보여요." />;
   }
 
   if (prediction.status === 'insufficient_sample') {
@@ -503,6 +666,7 @@ const styles = StyleSheet.create({
   },
   examCopy: {
     flex: 1,
+    minWidth: 0,
   },
   examList: {
     gap: spacing.sm,
@@ -529,6 +693,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
   },
+  examRowPressed: {
+    backgroundColor: colors.surfacePressed,
+  },
   examTitle: {
     color: colors.text,
     fontFamily: fonts.semibold,
@@ -539,12 +706,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   flexInput: {
+    flexBasis: 0,
     flex: 1,
-  },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    minWidth: 0,
   },
   headerIcon: {
     alignItems: 'center',
@@ -565,6 +729,10 @@ const styles = StyleSheet.create({
   iconButtonDisabled: {
     backgroundColor: colors.surfaceAlt,
   },
+  iconButtonPressed: {
+    opacity: 0.76,
+    transform: [{ scale: 0.96 }],
+  },
   input: {
     backgroundColor: colors.surfaceAlt,
     borderColor: colors.border,
@@ -578,6 +746,8 @@ const styles = StyleSheet.create({
   },
   insufficientBox: {
     backgroundColor: colors.warningSoft,
+    borderColor: colors.border,
+    borderWidth: 1,
     borderRadius: radii.md,
     gap: spacing.xs,
     padding: spacing.md,
@@ -597,6 +767,8 @@ const styles = StyleSheet.create({
   lockedBox: {
     alignItems: 'center',
     backgroundColor: colors.warningSoft,
+    borderColor: colors.border,
+    borderWidth: 1,
     borderRadius: radii.md,
     flexDirection: 'row',
     gap: spacing.sm,
@@ -643,7 +815,64 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.bold,
     fontSize: typography.h3,
+    fontVariant: ['tabular-nums'],
     fontWeight: '800',
+  },
+  neisSubjectChip: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 36,
+    paddingHorizontal: spacing.md,
+  },
+  neisSubjectChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  neisSubjectChipPressed: {
+    backgroundColor: colors.surfacePressed,
+  },
+  neisSubjectChipText: {
+    color: colors.text,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '600',
+  },
+  neisSubjectChipTextActive: {
+    color: colors.surface,
+  },
+  neisSubjectGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  neisSubjectHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  neisSubjectMeta: {
+    color: colors.primary,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '700',
+  },
+  neisSubjectPanel: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  neisSubjectTitle: {
+    color: colors.text,
+    fontFamily: fonts.semibold,
+    fontSize: typography.body,
+    fontWeight: '700',
   },
   predictionBox: {
     gap: spacing.md,
@@ -680,16 +909,50 @@ const styles = StyleSheet.create({
   scoreRow: {
     alignItems: 'center',
     backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
     borderRadius: radii.sm,
+    borderWidth: 1,
     flexDirection: 'row',
+    gap: spacing.sm,
     minHeight: 42,
     paddingHorizontal: spacing.md,
+  },
+  scoreRowReported: {
+    opacity: 0.62,
+  },
+  scoreReportButton: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 3,
+    minHeight: 28,
+    paddingHorizontal: spacing.sm,
+  },
+  scoreReportButtonDone: {
+    backgroundColor: colors.surface,
+  },
+  scoreReportButtonPressed: {
+    backgroundColor: colors.surfacePressed,
+  },
+  scoreReportText: {
+    color: colors.danger,
+    fontFamily: fonts.semibold,
+    fontSize: typography.tiny,
+    fontWeight: '700',
+  },
+  scoreReportTextDone: {
+    color: colors.subtle,
   },
   scoreValue: {
     color: colors.text,
     fontFamily: fonts.semibold,
     fontSize: typography.small,
+    fontVariant: ['tabular-nums'],
     fontWeight: '700',
+    minWidth: 44,
+    textAlign: 'right',
   },
   selectedExamBox: {
     backgroundColor: colors.primarySoft,
@@ -711,21 +974,16 @@ const styles = StyleSheet.create({
   statsWrap: {
     gap: spacing.md,
   },
-  subtitle: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
+  syncMessage: {
+    color: colors.primary,
+    fontFamily: fonts.semibold,
     fontSize: typography.small,
+    fontWeight: '700',
     lineHeight: 20,
-    marginTop: spacing.xs,
-  },
-  title: {
-    color: colors.text,
-    fontFamily: fonts.bold,
-    fontSize: typography.h1,
-    fontWeight: '800',
   },
   twoColumn: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
   },
   warningText: {

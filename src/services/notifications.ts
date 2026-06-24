@@ -14,6 +14,7 @@ Notifications.setNotificationHandler({
 });
 
 const notificationOwner = 'wenever';
+let localNotificationScheduleSyncQueue: Promise<void> = Promise.resolve();
 
 const weekdayToExpoNumber: Record<TimetableDay, number> = {
   월: 2,
@@ -69,6 +70,49 @@ function subtractMinutes(time: string, minutes: number) {
   };
 }
 
+function getClassReminderContent(slot: TimetableSlot) {
+  return {
+    title: `${slot.period}교시 ${slot.subject}`,
+    body: `${slot.startTime} 시작 · ${slot.room} · ${slot.teacher} 선생님`,
+  };
+}
+
+function getTimetableReminderKey(slot: TimetableSlot, reminderMinutes: number) {
+  const reminderTime = subtractMinutes(slot.startTime, reminderMinutes);
+  const content = getClassReminderContent(slot);
+  return JSON.stringify([slot.day, reminderTime.hour, reminderTime.minute, content.title, content.body]);
+}
+
+function uniqueTimetableReminderSlots(slots: TimetableSlot[], reminderMinutes: number) {
+  const seen = new Set<string>();
+  return slots.filter((slot) => {
+    const key = getTimetableReminderKey(slot, reminderMinutes);
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function formatMealNotificationItem(item: string) {
+  return item
+    .replace(/#/g, '')
+    .replace(/\*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getMealReminderContent(meal: MealMenu) {
+  const items = meal.items.map(formatMealNotificationItem).filter(Boolean);
+
+  return {
+    title: `오늘 ${meal.type} (${items.length}개)`,
+    body: items.join('\n'),
+  };
+}
+
 async function cancelWeneverScheduledNotifications() {
   const requests = await Notifications.getAllScheduledNotificationsAsync();
   await Promise.all(
@@ -85,10 +129,11 @@ export async function scheduleClassReminder(slot: TimetableSlot, reminderMinutes
   }
 
   const reminderTime = subtractMinutes(slot.startTime, reminderMinutes);
+  const content = getClassReminderContent(slot);
   return Notifications.scheduleNotificationAsync({
     content: {
-      title: `${slot.period}교시 ${slot.subject}`,
-      body: `${slot.startTime} 시작 · ${slot.room} · ${slot.teacher} 선생님`,
+      title: content.title,
+      body: content.body,
       data: {
         owner: notificationOwner,
         slotId: slot.id,
@@ -105,14 +150,15 @@ export async function scheduleClassReminder(slot: TimetableSlot, reminderMinutes
 }
 
 async function scheduleTimetableReminders(timetable: Timetable, reminderMinutes: number) {
-  const slots = timetable.slots.slice(0, 40);
+  const slots = uniqueTimetableReminderSlots(timetable.slots, reminderMinutes).slice(0, 40);
   await Promise.all(
     slots.map((slot) => {
       const reminderTime = subtractMinutes(slot.startTime, reminderMinutes);
+      const content = getClassReminderContent(slot);
       return Notifications.scheduleNotificationAsync({
         content: {
-          title: `${slot.period}교시 ${slot.subject}`,
-          body: `${slot.startTime} 시작 · ${slot.room} · ${slot.teacher} 선생님`,
+          title: content.title,
+          body: content.body,
           data: {
             owner: notificationOwner,
             slotId: slot.id,
@@ -145,10 +191,11 @@ async function scheduleMealReminder(meal: MealMenu, settings: NotificationSettin
     return;
   }
 
+  const content = getMealReminderContent(meal);
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: `오늘 ${meal.type}`,
-      body: meal.items.slice(0, 3).join(', '),
+      title: content.title,
+      body: content.body,
       data: {
         owner: notificationOwner,
         mealDate: meal.date,
@@ -163,7 +210,7 @@ async function scheduleMealReminder(meal: MealMenu, settings: NotificationSettin
   });
 }
 
-export async function syncLocalNotificationSchedule(
+async function runLocalNotificationScheduleSync(
   settings: NotificationSettings,
   timetable: Timetable,
   meal: MealMenu,
@@ -183,4 +230,20 @@ export async function syncLocalNotificationSchedule(
   }
 
   return true;
+}
+
+export function syncLocalNotificationSchedule(
+  settings: NotificationSettings,
+  timetable: Timetable,
+  meal: MealMenu,
+  requestPermission = false,
+) {
+  const sync = localNotificationScheduleSyncQueue.then(() =>
+    runLocalNotificationScheduleSync(settings, timetable, meal, requestPermission),
+  );
+  localNotificationScheduleSyncQueue = sync.then(
+    () => undefined,
+    () => undefined,
+  );
+  return sync;
 }

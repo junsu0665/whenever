@@ -87,6 +87,36 @@ export const demoUsers: Profile[] = [
     friendTimetableViewStatus: 'enabled',
   },
   {
+    id: 'user-5',
+    name: '한유진',
+    anonymousName: '익명',
+    schoolId: demoSchool.id,
+    schoolName: demoSchool.name,
+    grade: 2,
+    className: '10반',
+    verificationStatus: 'approved',
+    accountStatus: 'active',
+    joinedAt: '2026-03-09T02:18:00.000Z',
+    lastActiveAt: '2026-05-13T08:21:00.000Z',
+    timetableShareStatus: 'enabled',
+    friendTimetableViewStatus: 'enabled',
+  },
+  {
+    id: 'user-6',
+    name: '강하준',
+    anonymousName: '익명',
+    schoolId: demoSchool.id,
+    schoolName: demoSchool.name,
+    grade: 2,
+    className: '8반',
+    verificationStatus: 'approved',
+    accountStatus: 'active',
+    joinedAt: '2026-03-11T05:28:00.000Z',
+    lastActiveAt: '2026-05-13T11:16:00.000Z',
+    timetableShareStatus: 'enabled',
+    friendTimetableViewStatus: 'enabled',
+  },
+  {
     id: 'user-pending',
     name: '최서연',
     anonymousName: '익명',
@@ -151,7 +181,7 @@ export const demoStudentVerifications: StudentVerificationRequest[] = [
     submittedAt: '2026-05-12T06:30:00.000Z',
     reviewedAt: '2026-05-12T07:00:00.000Z',
     reviewerId: demoProfile.id,
-    rejectionReason: '이름과 학교명이 선명하게 보이지 않습니다.',
+    rejectionReason: '이름과 학교명이 선명하게 보이지 않아요.',
   },
 ];
 
@@ -229,7 +259,7 @@ export const demoTimetable: Timetable = {
       teacher: '박지현',
       room: '2-11',
       courseId: 'course-social',
-      color: '#43A99E',
+      color: '#00845E',
     },
     {
       id: 'slot-2',
@@ -241,7 +271,7 @@ export const demoTimetable: Timetable = {
       teacher: '김민우',
       room: '국어실',
       courseId: 'course-korean',
-      color: '#4C8DFF',
+      color: '#7ED8A4',
     },
     {
       id: 'slot-3',
@@ -253,7 +283,7 @@ export const demoTimetable: Timetable = {
       teacher: '이상민',
       room: '3-2',
       courseId: 'course-math-2',
-      color: '#FF8B7B',
+      color: '#2FA66B',
     },
     {
       id: 'slot-4',
@@ -265,7 +295,7 @@ export const demoTimetable: Timetable = {
       teacher: '조예진',
       room: '영어실',
       courseId: 'course-english',
-      color: '#EBA83A',
+      color: '#00845E',
     },
     {
       id: 'slot-5',
@@ -277,7 +307,7 @@ export const demoTimetable: Timetable = {
       teacher: '정하나',
       room: '과학실',
       courseId: 'course-physics',
-      color: '#43A99E',
+      color: '#00845E',
     },
     {
       id: 'slot-6',
@@ -289,7 +319,7 @@ export const demoTimetable: Timetable = {
       teacher: '이주영',
       room: '과학실',
       courseId: 'course-chemistry',
-      color: '#4C8DFF',
+      color: '#7ED8A4',
     },
     {
       id: 'slot-7',
@@ -301,7 +331,7 @@ export const demoTimetable: Timetable = {
       teacher: '최성호',
       room: '진로실',
       courseId: 'course-career',
-      color: '#FF8B7B',
+      color: '#2FA66B',
     },
   ],
 };
@@ -317,7 +347,7 @@ export const demoFriends: Friend[] = [
     className: '9반',
     status: 'accepted',
     requestedByCurrentUser: false,
-    avatarColor: '#E7F7F4',
+    avatarColor: '#E9F8F0',
     sharedSlotIds: ['slot-2', 'slot-5'],
   },
   {
@@ -330,7 +360,7 @@ export const demoFriends: Friend[] = [
     className: '7반',
     status: 'accepted',
     requestedByCurrentUser: false,
-    avatarColor: '#E7F7F4',
+    avatarColor: '#E9F8F0',
     sharedSlotIds: ['slot-5'],
   },
   {
@@ -343,7 +373,7 @@ export const demoFriends: Friend[] = [
     className: '4반',
     status: 'accepted',
     requestedByCurrentUser: false,
-    avatarColor: '#F2F4F6',
+    avatarColor: '#F0F8F3',
     sharedSlotIds: ['slot-2'],
   },
 ];

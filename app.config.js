@@ -16,13 +16,17 @@ const requiredProductionEnv = [
   'EXPO_PUBLIC_ADMOB_IOS_APP_OPEN_UNIT_ID',
 ];
 
-function assertProductionEnv(androidAppId, iosAppId) {
+function assertProductionEnv(androidAppId, iosAppId, appleTeamId) {
+  const buildPlatform = process.env.EAS_BUILD_PLATFORM;
   const missing = requiredProductionEnv.filter((name) => !process.env[name]);
   if (!androidAppId) {
     missing.push('ADMOB_ANDROID_APP_ID');
   }
   if (!iosAppId) {
     missing.push('ADMOB_IOS_APP_ID');
+  }
+  if (buildPlatform === 'ios' && !appleTeamId) {
+    missing.push('APPLE_TEAM_ID');
   }
 
   if (missing.length) {
@@ -46,9 +50,10 @@ module.exports = ({ config }) => {
   const isProductionBuild = process.env.EAS_BUILD_PROFILE === 'production';
   const androidAppId = process.env.ADMOB_ANDROID_APP_ID || process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID;
   const iosAppId = process.env.ADMOB_IOS_APP_ID || process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID;
+  const appleTeamId = process.env.APPLE_TEAM_ID || process.env.EXPO_APPLE_TEAM_ID;
 
   if (isProductionBuild) {
-    assertProductionEnv(androidAppId, iosAppId);
+    assertProductionEnv(androidAppId, iosAppId, appleTeamId);
   }
 
   const plugins = (config.plugins ?? []).filter((plugin) => {
@@ -61,6 +66,10 @@ module.exports = ({ config }) => {
 
   return {
     ...config,
+    ios: {
+      ...config.ios,
+      ...(appleTeamId ? { appleTeamId } : {}),
+    },
     plugins: [
       ...plugins,
       [

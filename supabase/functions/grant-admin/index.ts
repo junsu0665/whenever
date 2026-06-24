@@ -5,16 +5,20 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+function jsonResponse(payload: Record<string, unknown>, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    status,
+  });
+}
+
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 405,
-    });
+    return jsonResponse({ error: 'Method not allowed' }, 405);
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -25,18 +29,16 @@ Deno.serve(async (request) => {
   const token = authorization.replace(/^Bearer\s+/i, '');
   const body = await request.json().catch(() => ({}));
 
-  if (!supabaseUrl || !anonKey || !serviceRoleKey || !bootstrapToken || !token) {
-    return new Response(JSON.stringify({ error: 'Admin bootstrap is not configured' }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500,
-    });
+  if (!supabaseUrl || !anonKey || !serviceRoleKey || !bootstrapToken) {
+    return jsonResponse({ error: 'Admin bootstrap is not configured' }, 500);
+  }
+
+  if (!token) {
+    return jsonResponse({ error: 'Invalid session' }, 401);
   }
 
   if (body?.bootstrapToken !== bootstrapToken) {
-    return new Response(JSON.stringify({ error: 'Invalid bootstrap token' }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 403,
-    });
+    return jsonResponse({ error: 'Invalid bootstrap token' }, 403);
   }
 
   const userClient = createClient(supabaseUrl, anonKey, {
@@ -49,10 +51,33 @@ Deno.serve(async (request) => {
   } = await userClient.auth.getUser();
 
   if (userError || !user) {
-    return new Response(JSON.stringify({ error: 'Invalid session' }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 401,
-    });
+    return jsonResponse({ error: 'Invalid session' }, 401);
+  }
+
+  const { count: activeAdminCount, error: adminCountError } = await serviceClient
+    .from('profiles')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_admin', true)
+    .eq('account_status', 'active');
+
+  if (adminCountError) {
+    return jsonResponse({ error: 'Could not verify admin bootstrap state' }, 500);
+  }
+
+  if ((activeAdminCount ?? 0) > 0) {
+    const { data: callerProfile, error: callerProfileError } = await serviceClient
+      .from('profiles')
+      .select('account_status, is_admin')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (callerProfileError) {
+      return jsonResponse({ error: 'Could not verify caller permissions' }, 500);
+    }
+
+    if (callerProfile?.account_status !== 'active' || callerProfile.is_admin !== true) {
+      return jsonResponse({ error: 'Admin bootstrap is closed' }, 403);
+    }
   }
 
   const { error } = await serviceClient
@@ -66,13 +91,8 @@ Deno.serve(async (request) => {
     .eq('id', user.id);
 
   if (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500,
-    });
+    return jsonResponse({ error: error.message }, 500);
   }
 
-  return new Response(JSON.stringify({ ok: true, userId: user.id }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
+  return jsonResponse({ ok: true, userId: user.id });
 });

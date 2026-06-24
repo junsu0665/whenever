@@ -1,5 +1,7 @@
 node_modules/
 .expo/
+.netlify/
+.codex/
 .DS_Store
 supabase/.temp/
 dist/

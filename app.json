@@ -15,6 +15,11 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.wenever.app",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.wenever.app"
+        ]
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "학생증과 시간표 사진을 업로드하기 위해 사진 보관함 접근이 필요합니다.",
@@ -28,7 +33,9 @@
         "POST_NOTIFICATIONS"
       ],
       "blockedPermissions": [
-        "android.permission.RECORD_AUDIO"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -41,8 +48,16 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "@bacons/apple-targets",
       "expo-font",
-      "expo-image-picker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "학생증과 시간표 사진을 업로드하기 위해 사진 보관함 접근이 필요합니다.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
       "expo-notifications",
       "react-native-google-mobile-ads"
     ],

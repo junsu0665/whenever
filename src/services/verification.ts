@@ -17,7 +17,7 @@ export async function submitStudentVerification(profile: Profile, imageUri: stri
   } = await supabase.auth.getUser();
 
   if (userError || !user) {
-    throw new Error('학생증 업로드에는 Supabase 로그인 세션이 필요합니다.');
+    throw new Error('로그인 상태를 확인하지 못했어요. 다시 로그인한 뒤 시도해 주세요.');
   }
 
   const response = await fetch(imageUri);

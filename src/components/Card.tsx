@@ -50,7 +50,7 @@ const styles = StyleSheet.create({
     borderCurve: 'continuous',
     borderRadius: radii.lg,
     borderWidth: 1,
-    boxShadow: '0 12px 28px rgba(23, 32, 42, 0.07)',
-    padding: spacing.xl,
+    boxShadow: '0 8px 18px rgba(14, 21, 17, 0.035)',
+    padding: spacing.lg,
   },
 });

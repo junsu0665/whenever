@@ -1,4 +1,4 @@
-export type TabKey = 'home' | 'timetable' | 'board' | 'meal' | 'grades' | 'profile' | 'admin';
+export type TabKey = 'home' | 'timetable' | 'board' | 'meal' | 'grades' | 'settings' | 'admin';
 export type VerificationStatus = 'not_submitted' | 'pending' | 'approved' | 'rejected';
 export type ShareStatus = 'enabled' | 'disabled';
 export type PostScope = 'school' | 'course';
@@ -111,6 +111,7 @@ export interface Post {
   courseId?: string;
   title: string;
   body: string;
+  imageUris?: string[];
   authorId: string;
   anonymousLabel: string;
   createdAt: string;
@@ -192,6 +193,12 @@ export interface ScoreExamInput {
   examName: string;
   maxScore: number;
   totalStudents?: number;
+}
+
+export interface ScoreSubjectCandidateResult {
+  subjects: string[];
+  timetableSubjectCount: number;
+  neisSubjectCount: number;
 }
 
 export interface ScoreSubmission {

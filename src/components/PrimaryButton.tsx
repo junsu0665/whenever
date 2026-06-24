@@ -1,7 +1,10 @@
 import React, { ReactNode, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, ViewStyle } from 'react-native';
+import { Animated, Platform, Pressable, StyleProp, StyleSheet, Text, ViewStyle } from 'react-native';
 
 import { colors, fonts, radii, spacing, typography } from '../theme';
+import { hapticButton } from '../utils/haptics';
+
+const canUseNativeDriver = Platform.OS !== 'web';
 
 interface PrimaryButtonProps {
   label: string;
@@ -9,7 +12,7 @@ interface PrimaryButtonProps {
   icon?: ReactNode;
   disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'danger';
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
 }
 
 export function PrimaryButton({ label, onPress, icon, disabled, variant = 'primary', style }: PrimaryButtonProps) {
@@ -17,24 +20,38 @@ export function PrimaryButton({ label, onPress, icon, disabled, variant = 'prima
   const animateScale = (toValue: number) => {
     Animated.spring(scale, {
       toValue,
-      friction: 7,
+      friction: 9,
       tension: 180,
-      useNativeDriver: false,
+      useNativeDriver: canUseNativeDriver,
     }).start();
+  };
+  const handlePress = () => {
+    hapticButton(variant);
+    onPress();
   };
 
   return (
     <Animated.View style={[{ transform: [{ scale }] }, style]}>
       <Pressable
         accessibilityRole="button"
+        accessibilityState={{ disabled: Boolean(disabled) }}
         disabled={disabled}
-        onPress={onPress}
+        hitSlop={4}
+        onPress={handlePress}
         onPressIn={() => !disabled && animateScale(0.95)}
         onPressOut={() => !disabled && animateScale(1)}
-        style={({ pressed }) => [styles.button, styles[variant], disabled && styles.disabled, pressed && !disabled && styles.pressed]}
+        style={({ pressed }) => [
+          styles.button,
+          styles[variant],
+          disabled && styles.disabled,
+          pressed && !disabled && styles.pressed,
+        ]}
       >
         {icon}
         <Text
+          adjustsFontSizeToFit
+          minimumFontScale={0.86}
+          numberOfLines={1}
           style={[
             styles.label,
             variant === 'secondary' && styles.secondaryLabel,
@@ -57,42 +74,48 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     justifyContent: 'center',
-    minHeight: 52,
-    paddingHorizontal: spacing.xl,
+    minHeight: 46,
+    paddingHorizontal: spacing.lg,
   },
   danger: {
     backgroundColor: colors.dangerSoft,
-    borderColor: '#FFD5DA',
+    borderColor: colors.border,
     borderWidth: 1,
   },
   dangerLabel: {
     color: colors.danger,
   },
   disabled: {
-    backgroundColor: colors.dividerSoft,
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    boxShadow: 'none',
   },
   disabledLabel: {
     color: colors.disabled,
   },
   label: {
     color: colors.surface,
+    flexShrink: 1,
     fontFamily: fonts.semibold,
     fontSize: typography.body,
     fontWeight: '600',
+    textAlign: 'center',
   },
   pressed: {
     opacity: 0.92,
   },
   primary: {
     backgroundColor: colors.primary,
-    boxShadow: '0 10px 22px rgba(67, 169, 158, 0.22)',
+    borderColor: colors.primaryDark,
+    borderWidth: 1,
+    boxShadow: 'none',
   },
   secondary: {
-    backgroundColor: colors.primarySoft,
-    borderColor: '#CBECE6',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
     borderWidth: 1,
   },
   secondaryLabel: {
-    color: colors.primary,
+    color: colors.text,
   },
 });

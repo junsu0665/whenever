@@ -1,35 +1,43 @@
+import * as ImagePicker from 'expo-image-picker';
 import React, { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   ArrowLeft,
   Bookmark,
+  Camera,
   ChevronRight,
   Eye,
   Flag,
   Flame,
+  Image as ImageIcon,
   LockKeyhole,
   MessageCircle,
   MessageSquarePlus,
-  RefreshCcw,
   Search,
   Send,
+  Smile,
   ThumbsUp,
   Trash2,
-  X,
+  UserRound,
 } from 'lucide-react-native';
 
 import { Card } from '../components/Card';
+import { EmptyState } from '../components/EmptyState';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { RefreshGlyph } from '../components/RefreshGlyph';
 import { BoardNativeAd, BottomBannerAd } from '../components/RevenueAds';
 import { Screen } from '../components/Screen';
+import { ScreenHeader } from '../components/ScreenHeader';
 import { SectionHeader } from '../components/SectionHeader';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { colors, fonts, radii, spacing, typography } from '../theme';
 import { useAppState } from '../state/AppStateContext';
 import { Post, PostScope } from '../types';
+import { animateNextLayout } from '../utils/motion';
 
 type BoardView = 'hot' | 'mine' | 'myComments' | 'bookmarks' | PostScope;
 type ComposeCourse = { id: string; subject: string; meta: string };
+type ComposeImage = { uri: string; fileName?: string | null; mimeType?: string };
 type ReportTarget = { type: 'post' | 'comment'; id: string; label: string };
 
 const boardSegments: Array<{ key: BoardView; label: string }> = [
@@ -92,9 +100,12 @@ export function BoardScreen() {
   const [selectedBoardCourseId, setSelectedBoardCourseId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [composeImages, setComposeImages] = useState<ComposeImage[]>([]);
   const [commentBody, setCommentBody] = useState('');
   const [composerOpen, setComposerOpen] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(pageSize);
   const verified = profile.verificationStatus === 'approved';
@@ -174,11 +185,25 @@ export function BoardScreen() {
     },
     [boardView, comments, communityActions.bookmarkedPostIds, posts, profile.id, searchQuery, selectedBoardCourse],
   );
+
+  const refreshBoard = async () => {
+    if (refreshing) {
+      return;
+    }
+
+    setRefreshing(true);
+    try {
+      await refreshRemoteData(false);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const pagedPosts = visiblePosts.slice(0, visibleCount);
   const canSubmitPost = Boolean(title.trim() && body.trim() && (composeScope === 'school' || selectedComposeCourse));
   const showFeedAd = boardView === 'hot' || boardView === 'school' || boardView === 'course';
 
   const changeBoardView = (nextView: BoardView) => {
+    animateNextLayout();
     setBoardView(nextView);
     setVisibleCount(pageSize);
     if (nextView !== 'hot') {
@@ -190,6 +215,7 @@ export function BoardScreen() {
   };
 
   const openComposer = () => {
+    animateNextLayout();
     if (boardView !== 'hot' && boardView !== 'mine' && boardView !== 'myComments' && boardView !== 'bookmarks') {
       setComposeScope(boardView);
       if (boardView === 'course') {
@@ -197,6 +223,74 @@ export function BoardScreen() {
       }
     }
     setComposerOpen(true);
+  };
+
+  const appendComposeImages = (assets: ImagePicker.ImagePickerAsset[]) => {
+    animateNextLayout();
+    setComposeImages((current) => {
+      const nextImages = [
+        ...current,
+        ...assets
+          .filter((asset) => Boolean(asset.uri))
+          .map((asset) => ({
+            fileName: asset.fileName,
+            mimeType: asset.mimeType,
+            uri: asset.uri,
+          })),
+      ];
+
+      const seen = new Set<string>();
+      return nextImages.filter((image) => {
+        if (seen.has(image.uri)) {
+          return false;
+        }
+        seen.add(image.uri);
+        return true;
+      }).slice(0, 4);
+    });
+  };
+
+  const pickComposeImages = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('권한 필요', '사진 접근 권한이 필요해요.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: false,
+      allowsMultipleSelection: true,
+      mediaTypes: ['images'],
+      quality: 0.84,
+      selectionLimit: 4,
+    });
+
+    if (!result.canceled) {
+      appendComposeImages(result.assets);
+    }
+  };
+
+  const takeComposePhoto = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('권한 필요', '카메라 권한이 필요해요.');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      mediaTypes: ['images'],
+      quality: 0.84,
+    });
+
+    if (!result.canceled) {
+      appendComposeImages(result.assets);
+    }
+  };
+
+  const removeComposeImage = (uri: string) => {
+    animateNextLayout();
+    setComposeImages((current) => current.filter((image) => image.uri !== uri));
   };
 
   const submitPost = () => {
@@ -208,9 +302,23 @@ export function BoardScreen() {
       return;
     }
 
-    createPost(composeScope, title.trim(), body.trim(), composeScope === 'course' ? selectedComposeCourse?.id : undefined);
+    createPost(
+      composeScope,
+      title.trim(),
+      body.trim(),
+      composeScope === 'course' ? selectedComposeCourse?.id : undefined,
+      composeImages.map((image) => image.uri),
+    );
+    animateNextLayout();
     setTitle('');
     setBody('');
+    setComposeImages([]);
+    setDraftSavedAt(null);
+    setComposerOpen(false);
+  };
+
+  const closeComposer = () => {
+    animateNextLayout();
     setComposerOpen(false);
   };
 
@@ -243,6 +351,37 @@ export function BoardScreen() {
     }
     setReportTarget(null);
   };
+
+  if (composerOpen) {
+    return (
+      <ComposePage
+        body={body}
+        canSubmitPost={canSubmitPost}
+        composeScope={composeScope}
+        courseOptions={courseOptions}
+        onBack={closeComposer}
+        onChangeBody={setBody}
+        onChangeScope={(scope) => {
+          animateNextLayout();
+          setComposeScope(scope);
+        }}
+        onChangeTitle={setTitle}
+        onInsertEmoji={() => setBody((current) => `${current}${current.endsWith(' ') || !current ? '' : ' '}🙂`)}
+        onPickImages={pickComposeImages}
+        onRemoveImage={removeComposeImage}
+        onSelectCourse={setComposeCourseId}
+        onSaveDraft={() => setDraftSavedAt(new Date().toISOString())}
+        onSubmit={submitPost}
+        onTakePhoto={takeComposePhoto}
+        images={composeImages}
+        draftSavedAt={draftSavedAt}
+        profileSchoolName={profile.schoolName}
+        selectedComposeCourse={selectedComposeCourse}
+        title={title}
+        verified={verified}
+      />
+    );
+  }
 
   if (selectedPost) {
     return (
@@ -277,22 +416,25 @@ export function BoardScreen() {
   return (
     <View style={styles.boardShell}>
       <Screen>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>게시판</Text>
-            <Text style={styles.subtitle}>{profile.schoolName} · 학교 인증 익명</Text>
-          </View>
-        </View>
+        <ScreenHeader
+          action={
+            <View style={styles.anonymousBadge}>
+              <Text style={styles.anonymousBadgeText}>익명</Text>
+            </View>
+          }
+          subtitle={`${profile.schoolName} · 학교 인증 익명`}
+          title="게시판"
+        />
 
         <View style={styles.boardHome}>
-          <Pressable onPress={() => changeBoardView('hot')} style={styles.boardTile}>
+          <Pressable onPress={() => changeBoardView('hot')} style={({ pressed }) => [styles.boardTile, pressed && styles.boardTilePressed]}>
             <Flame color={colors.primary} size={22} />
-            <Text style={styles.boardTileTitle}>실시간 인기</Text>
+            <Text numberOfLines={1} style={styles.boardTileTitle}>실시간 인기</Text>
             <Text style={styles.boardTileMeta}>공감과 댓글이 많은 글</Text>
           </Pressable>
-          <Pressable onPress={() => changeBoardView('course')} style={styles.boardTile}>
+          <Pressable onPress={() => changeBoardView('course')} style={({ pressed }) => [styles.boardTile, pressed && styles.boardTilePressed]}>
             <MessageCircle color={colors.primary} size={22} />
-            <Text style={styles.boardTileTitle}>수업별</Text>
+            <Text numberOfLines={1} style={styles.boardTileTitle}>수업별</Text>
             <Text style={styles.boardTileMeta}>내 시간표 수업 게시판</Text>
           </Pressable>
         </View>
@@ -302,8 +444,14 @@ export function BoardScreen() {
         <Card>
           <SectionHeader
             action={
-              <Pressable accessibilityRole="button" onPress={refreshRemoteData} style={styles.refreshButton}>
-                <RefreshCcw color={colors.primary} size={18} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ busy: refreshing, disabled: refreshing }}
+                disabled={refreshing}
+                onPress={() => void refreshBoard()}
+                style={({ pressed }) => [styles.refreshButton, pressed && styles.roundButtonPressed]}
+              >
+                <RefreshGlyph active={refreshing} color={colors.primary} size={18} />
               </Pressable>
             }
             title={
@@ -348,62 +496,115 @@ export function BoardScreen() {
               {visibleCount < visiblePosts.length ? (
                 <PrimaryButton
                   label="더 보기"
-                  onPress={() => setVisibleCount((current) => current + pageSize)}
+                  onPress={() => {
+                    animateNextLayout();
+                    setVisibleCount((current) => current + pageSize);
+                  }}
                   style={styles.loadMoreButton}
                   variant="secondary"
                 />
               ) : null}
             </>
           ) : (
-            <Text style={styles.emptyText}>아직 올라온 글이 없습니다.</Text>
+            <EmptyState
+              description="검색어를 지우거나 다른 게시판을 확인해 주세요."
+              icon={<MessageCircle color={colors.subtle} size={24} />}
+              title="아직 올라온 글이 없어요."
+            />
           )}
         </Card>
         <BottomBannerAd placement="board_bottom" />
       </Screen>
 
-      {composerOpen ? (
-        <View style={styles.composeOverlay}>
-          <Pressable accessibilityRole="button" onPress={() => setComposerOpen(false)} style={styles.composeBackdrop} />
-          <Card style={styles.composeSheet}>
-            <View style={styles.composeHandle} />
-            <View style={styles.sheetHeader}>
-              <View style={styles.sheetTitleRow}>
-                <View style={styles.sheetIcon}>
-                  <MessageSquarePlus color={colors.primary} size={20} />
-                </View>
-                <View>
-                  <Text style={styles.sheetTitle}>익명 글쓰기</Text>
-                  <Text style={styles.sheetMeta}>{profile.schoolName}</Text>
-                </View>
-              </View>
-              <Pressable accessibilityLabel="글쓰기 닫기" accessibilityRole="button" onPress={() => setComposerOpen(false)} style={styles.closeButton}>
-                <X color={colors.text} size={20} />
-              </Pressable>
-            </View>
-            <ComposeForm
-              body={body}
-              canSubmitPost={canSubmitPost}
-              composeScope={composeScope}
-              courseOptions={courseOptions}
-              onChangeBody={setBody}
-              onChangeScope={setComposeScope}
-              onChangeTitle={setTitle}
-              onSelectCourse={setComposeCourseId}
-              onSubmit={submitPost}
-              selectedComposeCourse={selectedComposeCourse}
-              title={title}
-              verified={verified}
-            />
-          </Card>
-        </View>
-      ) : null}
-
-      {!composerOpen ? (
-        <Pressable accessibilityLabel="글쓰기" accessibilityRole="button" onPress={openComposer} style={styles.fab}>
-          <MessageSquarePlus color={colors.surface} size={25} />
-        </Pressable>
-      ) : null}
+      <Pressable accessibilityLabel="글쓰기" accessibilityRole="button" onPress={openComposer} style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}>
+        <MessageSquarePlus color={colors.surface} size={25} />
+      </Pressable>
     </View>
+  );
+}
+
+function ComposePage({
+  body,
+  canSubmitPost,
+  composeScope,
+  courseOptions,
+  images,
+  onBack,
+  onChangeBody,
+  onChangeScope,
+  onChangeTitle,
+  onInsertEmoji,
+  onPickImages,
+  onRemoveImage,
+  onSelectCourse,
+  onSaveDraft,
+  onSubmit,
+  onTakePhoto,
+  draftSavedAt,
+  profileSchoolName,
+  selectedComposeCourse,
+  title,
+  verified,
+}: {
+  body: string;
+  canSubmitPost: boolean;
+  composeScope: PostScope;
+  courseOptions: ComposeCourse[];
+  images: ComposeImage[];
+  onBack: () => void;
+  onChangeBody: (value: string) => void;
+  onChangeScope: (value: PostScope) => void;
+  onChangeTitle: (value: string) => void;
+  onInsertEmoji: () => void;
+  onPickImages: () => void;
+  onRemoveImage: (uri: string) => void;
+  onSelectCourse: (courseId: string) => void;
+  onSaveDraft: () => void;
+  onSubmit: () => void;
+  onTakePhoto: () => void;
+  draftSavedAt: string | null;
+  profileSchoolName: string;
+  selectedComposeCourse?: ComposeCourse;
+  title: string;
+  verified: boolean;
+}) {
+  return (
+    <Screen contentStyle={styles.composeScreenContent}>
+      <View style={styles.composePageHeader}>
+        <Pressable accessibilityLabel="게시판으로 돌아가기" accessibilityRole="button" onPress={onBack} style={({ pressed }) => [styles.backButton, pressed && styles.roundButtonPressed]}>
+          <ArrowLeft color={colors.text} size={22} />
+        </Pressable>
+        <View style={styles.detailHeaderCopy}>
+          <Text style={styles.detailHeaderTitle}>새 게시글</Text>
+          <Text numberOfLines={1} style={styles.detailHeaderMeta}>
+            익명 · {profileSchoolName} · {composeScope === 'school' ? '학교 전체' : selectedComposeCourse?.subject ?? '수강자'}
+          </Text>
+        </View>
+        <Pressable accessibilityRole="button" onPress={onSaveDraft} style={({ pressed }) => [styles.draftButton, pressed && styles.roundButtonPressed]}>
+          <Text style={styles.draftButtonText}>{draftSavedAt ? '저장됨' : '임시저장'}</Text>
+        </Pressable>
+      </View>
+
+      <ComposeForm
+        body={body}
+        canSubmitPost={canSubmitPost}
+        composeScope={composeScope}
+        courseOptions={courseOptions}
+        images={images}
+        onChangeBody={onChangeBody}
+        onChangeScope={onChangeScope}
+        onChangeTitle={onChangeTitle}
+        onInsertEmoji={onInsertEmoji}
+        onPickImages={onPickImages}
+        onRemoveImage={onRemoveImage}
+        onSelectCourse={onSelectCourse}
+        onSubmit={onSubmit}
+        onTakePhoto={onTakePhoto}
+        selectedComposeCourse={selectedComposeCourse}
+        title={title}
+        verified={verified}
+      />
+    </Screen>
   );
 }
 
@@ -417,7 +618,7 @@ function CourseFilter({
   selectedCourse?: ComposeCourse;
 }) {
   if (!courseOptions.length) {
-    return <Text style={styles.emptyInlineText}>시간표에 등록된 수업이 없습니다.</Text>;
+    return <Text style={styles.emptyInlineText}>시간표에 등록된 수업이 없어요.</Text>;
   }
 
   return (
@@ -430,7 +631,7 @@ function CourseFilter({
             accessibilityState={{ selected: active }}
             key={course.id}
             onPress={() => onSelectCourse(course.id)}
-            style={[styles.courseFilterChip, active ? styles.courseFilterChipActive : null]}
+            style={({ pressed }) => [styles.courseFilterChip, active ? styles.courseFilterChipActive : null, pressed && styles.chipPressed]}
           >
             <Text style={[styles.courseFilterText, active ? styles.courseFilterTextActive : null]}>{course.subject}</Text>
           </Pressable>
@@ -445,11 +646,16 @@ function ComposeForm({
   canSubmitPost,
   composeScope,
   courseOptions,
+  images,
   onChangeBody,
   onChangeScope,
   onChangeTitle,
+  onInsertEmoji,
+  onPickImages,
+  onRemoveImage,
   onSelectCourse,
   onSubmit,
+  onTakePhoto,
   selectedComposeCourse,
   title,
   verified,
@@ -458,11 +664,16 @@ function ComposeForm({
   canSubmitPost: boolean;
   composeScope: PostScope;
   courseOptions: ComposeCourse[];
+  images: ComposeImage[];
   onChangeBody: (value: string) => void;
   onChangeScope: (value: PostScope) => void;
   onChangeTitle: (value: string) => void;
+  onInsertEmoji: () => void;
+  onPickImages: () => void;
+  onRemoveImage: (uri: string) => void;
   onSelectCourse: (courseId: string) => void;
   onSubmit: () => void;
+  onTakePhoto: () => void;
   selectedComposeCourse?: ComposeCourse;
   title: string;
   verified: boolean;
@@ -473,7 +684,7 @@ function ComposeForm({
         <LockKeyhole color={colors.primary} size={24} />
         <View style={styles.lockedCopy}>
           <Text style={styles.lockedTitle}>학생증 인증 승인 후 작성할 수 있어요.</Text>
-          <Text style={styles.lockedMeta}>읽기는 가능하지만 글·댓글 작성은 제한됩니다.</Text>
+          <Text style={styles.lockedMeta}>읽기는 가능하고, 글·댓글은 승인 후 열려요.</Text>
         </View>
       </View>
     );
@@ -510,13 +721,18 @@ function ComposeForm({
                 );
               })
             ) : (
-              <Text style={styles.emptyInlineText}>시간표에 등록된 수업이 없습니다.</Text>
+              <Text style={styles.emptyInlineText}>시간표에 등록된 수업이 없어요.</Text>
             )}
           </View>
         </View>
       ) : null}
       <View style={styles.editorPanel}>
+        <View style={styles.editorFieldHeader}>
+          <Text style={styles.editorFieldLabel}>제목</Text>
+          <Text style={styles.editorFieldCount}>{title.trim().length}/80</Text>
+        </View>
         <TextInput
+          maxLength={80}
           onChangeText={onChangeTitle}
           placeholder={composeScope === 'school' ? '제목' : `${selectedComposeCourse?.subject ?? '수업'} 질문 제목`}
           placeholderTextColor={colors.disabled}
@@ -524,28 +740,62 @@ function ComposeForm({
           value={title}
         />
         <View style={styles.editorDivider} />
+        <View style={styles.editorFieldHeader}>
+          <Text style={styles.editorFieldLabel}>내용</Text>
+          <Text style={styles.editorFieldCount}>{body.trim().length}/3000</Text>
+        </View>
         <TextInput
+          maxLength={3000}
           multiline
           onChangeText={onChangeBody}
-          placeholder="내용을 입력하세요"
+          placeholder="내용을 입력해 주세요"
           placeholderTextColor={colors.disabled}
           style={styles.composeBodyInput}
           textAlignVertical="top"
           value={body}
         />
+        {images.length ? (
+          <View style={styles.attachmentStrip}>
+            {images.map((image, index) => (
+              <View key={image.uri} style={styles.attachmentThumbWrap}>
+                <Image accessibilityIgnoresInvertColors source={{ uri: image.uri }} style={styles.attachmentThumb} />
+                <Pressable
+                  accessibilityLabel={`첨부 사진 ${index + 1} 삭제`}
+                  accessibilityRole="button"
+                  onPress={() => onRemoveImage(image.uri)}
+                  style={({ pressed }) => [styles.attachmentRemove, pressed && styles.roundButtonPressed]}
+                >
+                  <Text style={styles.attachmentRemoveText}>삭제</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
         <View style={styles.editorFooter}>
-          <Text style={styles.editorCounter}>제목 {title.trim().length}자 · 본문 {body.trim().length}자</Text>
-          <Text style={styles.editorScope}>{composeScope === 'school' ? '학교' : '수강자'}</Text>
+          <View style={styles.editorToolRow}>
+            <EditorToolButton accessibilityLabel="사진 추가" icon={<ImageIcon color={colors.text} size={20} />} onPress={onPickImages} />
+            <EditorToolButton accessibilityLabel="카메라로 사진 촬영" icon={<Camera color={colors.text} size={20} />} onPress={onTakePhoto} />
+            <EditorToolButton accessibilityLabel="이모지 추가" icon={<Smile color={colors.text} size={20} />} onPress={onInsertEmoji} />
+          </View>
+          <Pressable accessibilityRole="button" onPress={() => undefined} style={({ pressed }) => [styles.editorScopeButton, pressed && styles.editorScopeButtonPressed]}>
+            <UserRound color={colors.text} size={18} />
+            <Text style={styles.editorScope}>익명 설정</Text>
+            <ChevronRight color={colors.muted} size={16} />
+          </Pressable>
+        </View>
+      </View>
+      <View style={styles.composeRuleBox}>
+        <LockKeyhole color={colors.primary} size={19} />
+        <View style={styles.composeRuleCopy}>
+          <Text style={styles.composeRuleTitle}>익명 게시판 규칙을 지켜주세요.</Text>
+          <Text style={styles.composeRuleMeta}>비방, 욕설, 개인정보 노출 글은 제재될 수 있어요.</Text>
         </View>
       </View>
       <View style={styles.publishRow}>
-        <View style={styles.anonymousBadge}>
-          <Text style={styles.anonymousBadgeText}>익명</Text>
-        </View>
         <PrimaryButton
           disabled={!canSubmitPost}
           icon={<Send color={canSubmitPost ? colors.surface : colors.disabled} size={18} />}
-          label="올리기"
+          label="익명으로 올리기"
           onPress={onSubmit}
           style={styles.publishButton}
         />
@@ -554,9 +804,30 @@ function ComposeForm({
   );
 }
 
+function EditorToolButton({
+  accessibilityLabel,
+  icon,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  icon: React.ReactNode;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.editorToolButton, pressed && styles.editorToolButtonPressed]}
+    >
+      {icon}
+    </Pressable>
+  );
+}
+
 function PostListItem({ post, onPress }: { post: Post; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={styles.post}>
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.post, pressed && styles.postPressed]}>
       <View style={styles.postHeader}>
         <Text style={styles.postTitle}>{post.title}</Text>
         {isHotPost(post) ? <Text style={styles.hotInline}>인기</Text> : null}
@@ -564,6 +835,12 @@ function PostListItem({ post, onPress }: { post: Post; onPress: () => void }) {
       <Text numberOfLines={2} style={styles.postBody}>
         {post.body}
       </Text>
+      {post.imageUris?.length ? (
+        <View style={styles.postAttachmentBadge}>
+          <ImageIcon color={colors.primary} size={14} />
+          <Text style={styles.postAttachmentText}>사진 {post.imageUris.length}</Text>
+        </View>
+      ) : null}
       <View style={styles.postFooter}>
         <Text style={styles.postMeta}>
           {post.anonymousLabel} · {formatTime(post.createdAt)}
@@ -632,7 +909,7 @@ function PostDetail({
   return (
     <Screen>
       <View style={styles.detailHeader}>
-        <Pressable onPress={onBack} style={styles.backButton}>
+        <Pressable onPress={onBack} style={({ pressed }) => [styles.backButton, pressed && styles.roundButtonPressed]}>
           <ArrowLeft color={colors.text} size={22} />
         </Pressable>
         <View style={styles.detailHeaderCopy}>
@@ -648,6 +925,13 @@ function PostDetail({
         </View>
         <Text style={styles.detailTitle}>{post.title}</Text>
         <Text style={styles.detailBody}>{post.body}</Text>
+        {post.imageUris?.length ? (
+          <View style={styles.detailImageGrid}>
+            {post.imageUris.map((uri) => (
+              <Image accessibilityIgnoresInvertColors key={uri} resizeMode="cover" source={{ uri }} style={styles.detailImage} />
+            ))}
+          </View>
+        ) : null}
         <View style={styles.detailInfoRow}>
           <Text style={styles.postMeta}>
             {post.anonymousLabel} · {formatTime(post.createdAt)}
@@ -774,7 +1058,7 @@ function PostDetail({
             );
           })
         ) : (
-          <Text style={styles.emptyText}>아직 댓글이 없습니다.</Text>
+          <EmptyState compact icon={<MessageCircle color={colors.subtle} size={22} />} title="아직 댓글이 없어요." />
         )}
       </Card>
 
@@ -785,7 +1069,7 @@ function PostDetail({
             <LockKeyhole color={colors.primary} size={24} />
             <View style={styles.lockedCopy}>
               <Text style={styles.lockedTitle}>댓글 작성은 인증 후 가능해요.</Text>
-              <Text style={styles.lockedMeta}>학생증 승인 전에는 읽기만 할 수 있습니다.</Text>
+              <Text style={styles.lockedMeta}>학생증 승인 전에는 읽기만 할 수 있어요.</Text>
             </View>
           </View>
         ) : (
@@ -821,7 +1105,7 @@ function ReportReasonPanel({
       <View style={styles.reportHeader}>
         <View>
           <Text style={styles.reportTitle}>{targetLabel} 신고 사유</Text>
-          <Text style={styles.reportMeta}>접수 후 신고 버튼은 다시 누를 수 없습니다.</Text>
+          <Text style={styles.reportMeta}>접수 후 신고 버튼은 다시 누를 수 없어요.</Text>
         </View>
         <Pressable accessibilityRole="button" onPress={onCancel} style={styles.reportCancel}>
           <Text style={styles.reportCancelText}>취소</Text>
@@ -884,12 +1168,17 @@ const styles = StyleSheet.create({
   boardTile: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
+    borderCurve: 'continuous',
     borderRadius: radii.lg,
     borderWidth: 1,
     flex: 1,
     gap: spacing.xs,
-    minHeight: 118,
-    padding: spacing.lg,
+    minHeight: 86,
+    padding: spacing.md,
+  },
+  boardTilePressed: {
+    backgroundColor: colors.surfacePressed,
+    transform: [{ scale: 0.99 }],
   },
   boardTileMeta: {
     color: colors.muted,
@@ -906,11 +1195,11 @@ const styles = StyleSheet.create({
   },
   anonymousBadge: {
     alignItems: 'center',
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radii.pill,
     borderWidth: 1,
-    minHeight: 44,
+    minHeight: 46,
     justifyContent: 'center',
     paddingHorizontal: spacing.lg,
   },
@@ -923,6 +1212,47 @@ const styles = StyleSheet.create({
   bodyInput: {
     minHeight: 92,
     paddingTop: spacing.md,
+  },
+  attachmentRemove: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    bottom: 6,
+    justifyContent: 'center',
+    minHeight: 25,
+    paddingHorizontal: spacing.sm,
+    position: 'absolute',
+    right: 6,
+  },
+  attachmentRemoveText: {
+    color: colors.danger,
+    fontFamily: fonts.semibold,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  attachmentStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  attachmentThumb: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.md,
+    height: '100%',
+    width: '100%',
+  },
+  attachmentThumbWrap: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    height: 88,
+    overflow: 'hidden',
+    width: 88,
   },
   commentAvatar: {
     alignItems: 'center',
@@ -994,19 +1324,6 @@ const styles = StyleSheet.create({
   compose: {
     gap: spacing.lg,
   },
-  closeButton: {
-    alignItems: 'center',
-    borderColor: colors.border,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    height: 38,
-    justifyContent: 'center',
-    width: 38,
-  },
-  composeBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(29, 29, 31, 0.22)',
-  },
   composeBlock: {
     gap: spacing.sm,
   },
@@ -1014,17 +1331,13 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.regular,
     fontSize: typography.body,
-    lineHeight: 24,
-    minHeight: 136,
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.md,
-  },
-  composeHandle: {
-    alignSelf: 'center',
-    backgroundColor: colors.border,
-    borderRadius: radii.pill,
-    height: 4,
-    width: 42,
+    lineHeight: 25,
+    minHeight: 250,
+    outlineColor: 'transparent',
+    outlineStyle: 'solid',
+    outlineWidth: 0,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
   },
   composeLabel: {
     color: colors.text,
@@ -1032,16 +1345,11 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
     fontWeight: '600',
   },
-  composeOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'flex-end',
-    padding: spacing.lg,
-    paddingBottom: spacing.xl,
-  },
-  composeSheet: {
-    borderRadius: radii.lg,
-    gap: spacing.lg,
-    maxHeight: '92%',
+  composePageHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingTop: spacing.xs,
   },
   composePanelHeader: {
     alignItems: 'center',
@@ -1055,20 +1363,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   composeScopePanel: {
-    backgroundColor: colors.surfaceAlt,
+    backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radii.lg,
     borderWidth: 1,
-    gap: spacing.md,
+    gap: spacing.sm,
     padding: spacing.md,
+  },
+  composeScreenContent: {
+    gap: spacing.lg,
+    paddingTop: spacing.lg,
   },
   composeTitleInput: {
     color: colors.text,
     fontFamily: fonts.semibold,
-    fontSize: typography.h2,
-    fontWeight: '600',
-    minHeight: 56,
-    paddingHorizontal: spacing.md,
+    fontSize: 20,
+    fontWeight: '700',
+    minHeight: 48,
+    outlineColor: 'transparent',
+    outlineStyle: 'solid',
+    outlineWidth: 0,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 0,
   },
   courseChip: {
     backgroundColor: colors.surfaceAlt,
@@ -1078,7 +1394,7 @@ const styles = StyleSheet.create({
     flexBasis: '48%',
     flexGrow: 1,
     gap: spacing.xs,
-    minHeight: 64,
+    minHeight: 50,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
@@ -1132,6 +1448,9 @@ const styles = StyleSheet.create({
   courseFilterTextActive: {
     color: colors.surface,
   },
+  chipPressed: {
+    opacity: 0.78,
+  },
   coursePicker: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1156,6 +1475,7 @@ const styles = StyleSheet.create({
   },
   detailHeaderCopy: {
     flex: 1,
+    minWidth: 0,
   },
   detailHeaderMeta: {
     color: colors.muted,
@@ -1164,10 +1484,23 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
   },
   detailHeaderTitle: {
-    color: colors.text,
+    color: colors.primary,
     fontFamily: fonts.semibold,
     fontSize: typography.h2,
     fontWeight: '600',
+  },
+  detailImage: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radii.md,
+    flexBasis: '48%',
+    flexGrow: 1,
+    height: 136,
+  },
+  detailImageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.lg,
   },
   detailInfoRow: {
     alignItems: 'center',
@@ -1199,14 +1532,6 @@ const styles = StyleSheet.create({
   deleteText: {
     color: colors.danger,
   },
-  emptyText: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.body,
-    lineHeight: 22,
-    paddingVertical: spacing.lg,
-    textAlign: 'center',
-  },
   emptyInlineText: {
     color: colors.muted,
     fontFamily: fonts.regular,
@@ -1219,30 +1544,77 @@ const styles = StyleSheet.create({
     fontSize: typography.tiny,
   },
   editorDivider: {
-    backgroundColor: colors.border,
+    backgroundColor: colors.dividerSoft,
     height: 1,
+  },
+  editorFieldCount: {
+    color: colors.subtle,
+    fontFamily: fonts.semibold,
+    fontSize: typography.tiny,
+    fontWeight: '600',
+  },
+  editorFieldHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  editorFieldLabel: {
+    color: colors.text,
+    fontFamily: fonts.semibold,
+    fontSize: typography.body,
+    fontWeight: '700',
   },
   editorFooter: {
     alignItems: 'center',
-    borderTopColor: colors.border,
+    borderTopColor: colors.dividerSoft,
     borderTopWidth: 1,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    minHeight: 40,
-    paddingHorizontal: spacing.md,
+    minHeight: 46,
+    paddingHorizontal: spacing.lg,
   },
   editorPanel: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
+    borderCurve: 'continuous',
     borderRadius: radii.lg,
     borderWidth: 1,
+    boxShadow: '0 8px 18px rgba(14, 21, 17, 0.035)',
     overflow: 'hidden',
   },
   editorScope: {
-    color: colors.primary,
+    color: colors.text,
     fontFamily: fonts.semibold,
-    fontSize: typography.tiny,
+    fontSize: typography.small,
     fontWeight: '600',
+  },
+  editorScopeButton: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 36,
+    paddingLeft: spacing.sm,
+  },
+  editorScopeButtonPressed: {
+    opacity: 0.72,
+  },
+  editorToolButton: {
+    alignItems: 'center',
+    borderRadius: radii.pill,
+    height: 38,
+    justifyContent: 'center',
+    width: 38,
+  },
+  editorToolButtonPressed: {
+    backgroundColor: colors.surfacePressed,
+    transform: [{ scale: 0.96 }],
+  },
+  editorToolRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.xs,
   },
   loadMoreButton: {
     marginTop: spacing.md,
@@ -1253,18 +1625,17 @@ const styles = StyleSheet.create({
     borderColor: colors.primaryDark,
     borderWidth: 1,
     borderRadius: radii.pill,
-    bottom: spacing.xl,
-    elevation: 10,
-    height: 58,
+    bottom: 196,
+    boxShadow: '0 8px 18px rgba(47, 166, 107, 0.20)',
+    height: 52,
     justifyContent: 'center',
     position: 'absolute',
     right: spacing.xl,
-    width: 58,
+    width: 52,
   },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  fabPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.96 }],
   },
   input: {
     backgroundColor: colors.surface,
@@ -1307,13 +1678,32 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     borderTopWidth: 1,
     gap: spacing.sm,
-    paddingVertical: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  postPressed: {
+    backgroundColor: colors.surfaceAlt,
   },
   postBody: {
     color: colors.slate,
     fontFamily: fonts.regular,
     fontSize: typography.body,
     lineHeight: 22,
+  },
+  postAttachmentBadge: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radii.pill,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    minHeight: 28,
+    paddingHorizontal: spacing.sm,
+  },
+  postAttachmentText: {
+    color: colors.primary,
+    fontFamily: fonts.semibold,
+    fontSize: typography.tiny,
+    fontWeight: '700',
   },
   postFooter: {
     gap: spacing.sm,
@@ -1346,7 +1736,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.semibold,
     flex: 1,
-    fontSize: typography.h3,
+    fontSize: typography.body,
     fontWeight: '600',
   },
   reportCancel: {
@@ -1388,6 +1778,10 @@ const styles = StyleSheet.create({
     height: 34,
     justifyContent: 'center',
     width: 34,
+  },
+  roundButtonPressed: {
+    opacity: 0.76,
+    transform: [{ scale: 0.96 }],
   },
   reportReasonButton: {
     alignItems: 'center',
@@ -1436,6 +1830,9 @@ const styles = StyleSheet.create({
     fontFamily: fonts.regular,
     fontSize: typography.body,
     minHeight: 44,
+    outlineColor: 'transparent',
+    outlineStyle: 'solid',
+    outlineWidth: 0,
     padding: 0,
   },
   publishButton: {
@@ -1444,37 +1841,46 @@ const styles = StyleSheet.create({
   publishRow: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.md,
+    paddingBottom: spacing.xl,
   },
-  sheetIcon: {
+  draftButton: {
     alignItems: 'center',
-    backgroundColor: colors.primarySoft,
-    borderRadius: radii.pill,
-    height: 40,
     justifyContent: 'center',
-    width: 40,
+    minHeight: 38,
+    paddingHorizontal: spacing.sm,
   },
-  sheetHeader: {
+  draftButtonText: {
+    color: colors.primary,
+    fontFamily: fonts.semibold,
+    fontSize: typography.small,
+    fontWeight: '700',
+  },
+  composeRuleBox: {
     alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderRadius: radii.lg,
+    borderWidth: 1,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: spacing.md,
+    padding: spacing.md,
   },
-  sheetMeta: {
+  composeRuleCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  composeRuleMeta: {
     color: colors.muted,
     fontFamily: fonts.regular,
     fontSize: typography.small,
+    lineHeight: 19,
     marginTop: spacing.xs,
   },
-  sheetTitle: {
+  composeRuleTitle: {
     color: colors.text,
     fontFamily: fonts.semibold,
-    fontSize: typography.h2,
-    fontWeight: '600',
-  },
-  sheetTitleRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: spacing.md,
+    fontSize: typography.body,
+    fontWeight: '700',
   },
   statText: {
     color: colors.muted,
@@ -1482,17 +1888,5 @@ const styles = StyleSheet.create({
     fontSize: typography.small,
     fontWeight: '600',
     marginRight: spacing.xs,
-  },
-  subtitle: {
-    color: colors.muted,
-    fontFamily: fonts.regular,
-    fontSize: typography.small,
-    marginTop: spacing.xs,
-  },
-  title: {
-    color: colors.text,
-    fontFamily: fonts.semibold,
-    fontSize: typography.h1,
-    fontWeight: '600',
   },
 });
